@@ -11,6 +11,11 @@ import streamlit as st
 # ============================================================
 
 def load_labels(label_dir):
+    """
+    Lädt YOLO-Labels aus einem Verzeichnis.
+    Jede TXT-Datei enthält Zeilen im Format: [class x_center y_center width height]
+    Rückgabe: dict mit Bildname als key und np.array mit Boxen als value
+    """
     labels = {}
     for path in glob(os.path.join(label_dir, "*.txt")):
         name = os.path.basename(path)
@@ -19,11 +24,15 @@ def load_labels(label_dir):
             for line in f.readlines():
                 parts = list(map(float, line.strip().split()))
                 if len(parts) == 5:
-                    data.append(parts)  # [class, x, y, w, h]
+                    data.append(parts)
             labels[name] = np.array(data)
     return labels
 
 def bbox_iou(box1, box2):
+    """
+    Berechnet die IoU (Intersection over Union) zweier Boxen.
+    Boxen werden als [x_center, y_center, width, height] übergeben.
+    """
     x1_min = box1[0] - box1[2] / 2
     y1_min = box1[1] - box1[3] / 2
     x1_max = box1[0] + box1[2] / 2
@@ -49,6 +58,15 @@ def bbox_iou(box1, box2):
     return inter_area / union_area
 
 def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
+    """
+    Vergleicht Ground Truth Boxen mit Predictions.
+    Liefert ein DataFrame mit Details pro Box:
+    - image: Bildname
+    - iou: IoU Wert
+    - gt_class: Ground Truth Klasse
+    - pred_class: Vorhergesagte Klasse
+    - match: True, wenn korrekt vorhergesagt
+    """
     gt_labels = load_labels(gt_dir)
     pred_labels = load_labels(pred_dir)
     stats = []
@@ -88,6 +106,7 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
                     "match": False
                 })
 
+        # Vorhersagen ohne zugeordnetes GT
         for j, pred_box in enumerate(pred_boxes):
             if j not in matched_pred:
                 stats.append({
@@ -97,6 +116,7 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
                     "pred_class": int(pred_box[0]),
                     "match": False
                 })
+
     df = pd.DataFrame(stats)
     return df
 
@@ -108,9 +128,8 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_GT = os.path.join(BASE_DIR, "dataset", "labels", "val")
 DEFAULT_PRED = os.path.join(BASE_DIR, "scripts", "runs", "detect", "predict", "labels")
 
-st.title("🔩 Vollumfängliches YOLOv8 Dashboard – Schraubenanalyse")
-st.write("Dieses Interface bewertet die Leistung deiner KI bei der Erkennung von Schrauben und fehlenden Schrauben.")
-st.write(f"Basisverzeichnis: `{BASE_DIR}`")
+st.title("🔩 YOLOv8 Dashboard – Schraubenanalyse")
+st.write("Bewertet die KI-Leistung bei der Erkennung von **vorhandenen Schrauben (Bolt)** und **fehlenden Schrauben (Missing Bolt)**.")
 
 gt_dir = st.text_input("📁 Ground Truth Pfad:", DEFAULT_GT)
 pred_dir = st.text_input("📁 Prediction Pfad:", DEFAULT_PRED)
@@ -123,55 +142,90 @@ if st.button("🚀 Auswertung starten"):
     else:
         df = evaluate_model(gt_dir, pred_dir)
         if df.empty:
-            st.warning("⚠️ Keine Labels gefunden! Bitte Pfade prüfen.")
+            st.warning("⚠️ Keine Labels gefunden!")
         else:
             st.success("✅ Auswertung abgeschlossen!")
 
             # -----------------------
+            # Ground Truth nach Klassen
+            # -----------------------
+            gt_bolt = df[df["gt_class"] == 0]
+            gt_missing = df[df["gt_class"] == 1]
+
+            # -----------------------
             # Rohdaten
             # -----------------------
-            st.subheader("📋 Rohdaten")
-            st.markdown("""
-Jede Zeile steht für **eine Schraube**, die die KI erkannt oder die Ground Truth enthält:
-- **image:** Bilddatei  
-- **iou:** Überlappung zwischen Vorhersage und Ground Truth (0–1)  
-- **gt_class:** Ground Truth Klasse (0=vorhanden, 1=fehlend)  
-- **pred_class:** KI-Vorhersage  
-- **match:** True=korrekt erkannt
-""")
-            st.dataframe(df.head(20))
+            with st.expander("📋 Rohdaten (erste 20 Zeilen)"):
+                st.write("Zeigt alle Boxen, sowohl aus Ground Truth als auch aus Predictions.")
+                st.dataframe(df.head(20))
 
             # -----------------------
             # Gesamtkennzahlen
             # -----------------------
-            st.subheader("📊 Gesamtkennzahlen")
             correct = df[df["match"]]
-            precision = len(correct) / len(df[df["pred_class"].notna()]) if len(df[df["pred_class"].notna()]) else 0
-            recall = len(correct) / len(df[df["gt_class"].notna()]) if len(df[df["gt_class"].notna()]) else 0
+            pred_nonempty = df[df["pred_class"].notna()]
+            gt_nonempty = df[df["gt_class"].notna()]
+
+            precision = len(correct) / len(pred_nonempty) if len(pred_nonempty) else 0
+            recall = len(correct) / len(gt_nonempty) if len(gt_nonempty) else 0
             f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
             mean_iou = df["iou"].mean()
 
-            st.metric("Precision (Treffsicherheit)", f"{precision:.2f}", help="Wie viele von den erkannten Boxen waren korrekt?")
-            st.metric("Recall (Vollständigkeit)", f"{recall:.2f}", help="Wie viele der vorhandenen Boxen wurden korrekt erkannt?")
-            st.metric("F1-Score", f"{f1:.2f}", help="Kombination aus Precision und Recall")
-            st.metric("Mittlere IoU", f"{mean_iou:.2f}", help="Wie genau die Boxen übereinstimmen")
+            st.subheader("📊 Gesamtkennzahlen")
+            st.markdown("""
+**Erklärungen der Metriken:**
+- 🎯 **Precision:** Anteil korrekt erkannter Boxen an allen Vorhersagen. Verluste entstehen durch:
+  1. Falsch klassifizierte Boxen (vorhanden vs. fehlend)
+  2. Vorhersagen ohne Ground Truth
+- ✅ **Recall:** Anteil korrekt erkannter Boxen an allen Ground Truth Boxen. Verluste entstehen durch übersehene Boxen.
+- 📊 **F1-Score:** Harmonisches Mittel von Precision und Recall.
+- 📌 **Mittlere IoU:** Durchschnittliche Überlappung der Boxen (0–1, in % umgerechnet)
+""")
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("🎯 Precision", f"{precision*100:.2f} %")
+            col2.metric("✅ Recall", f"{recall*100:.2f} %")
+            col3.metric("📊 F1-Score", f"{f1*100:.2f} %")
+            col4.metric("📌 Mittlere IoU", f"{mean_iou*100:.2f} %")
 
             # -----------------------
-            # Klassen-spezifische Kennzahlen
+            # Precision-Fehleranalyse
             # -----------------------
-            st.subheader("🔹 Klassen-spezifische Kennzahlen")
+            with st.expander("⚠️ Precision-Fehleranalyse"):
+                st.write("Falsch-positive Vorhersagen:")
+                fp_wrong_class = df[(df["pred_class"].notna()) & (~df["match"]) & (df["gt_class"].notna())]
+                fp_no_gt = df[(df["pred_class"].notna()) & (df["gt_class"].isna())]
 
-            # Bolt (0)
-            gt_bolt = df[df["gt_class"] == 0]
-            correct_bolt = gt_bolt[gt_bolt["match"]]
-            recall_bolt = len(correct_bolt) / len(gt_bolt) if len(gt_bolt) > 0 else 0
-            st.metric("Recall vorhandene Schrauben (Bolt)", f"{recall_bolt:.2f}", help="Wie viele vorhandene Schrauben wurden korrekt erkannt?")
+                st.markdown(f"🟥 Falsch klassifizierte Boxen: {len(fp_wrong_class)} ({len(fp_wrong_class)/len(pred_nonempty)*100:.2f} % der Vorhersagen)")
+                st.markdown(f"📦 Vorhersagen ohne Ground Truth: {len(fp_no_gt)} ({len(fp_no_gt)/len(pred_nonempty)*100:.2f} %)")
 
-            # Missing Bolt (1)
-            gt_missing = df[df["gt_class"] == 1]
-            correct_missing = gt_missing[gt_missing["match"]]
-            recall_missing = len(correct_missing) / len(gt_missing) if len(gt_missing) > 0 else 0
-            st.metric("Recall fehlende Schrauben (Missing Bolt)", f"{recall_missing:.2f}", help="Wie viele fehlende Schrauben wurden korrekt erkannt?")
+                bolts_no_gt = fp_no_gt[fp_no_gt["pred_class"] == 0]
+                missing_no_gt = fp_no_gt[fp_no_gt["pred_class"] == 1]
+                st.markdown(f"🔹 Bolt ohne Ground Truth: {len(bolts_no_gt)}")
+                st.markdown(f"🔹 Missing Bolt ohne Ground Truth: {len(missing_no_gt)}")
+
+            # -----------------------
+            # Recall-Fehleranalyse
+            # -----------------------
+            with st.expander("⚠️ Recall-Fehleranalyse"):
+                st.write("Falsch-negative Vorhersagen (übersehene Ground Truth Boxen):")
+                fn_not_detected = df[(df["gt_class"].notna()) & (~df["match"])]
+                fn_bolt = fn_not_detected[fn_not_detected["gt_class"] == 0]
+                fn_missing = fn_not_detected[fn_not_detected["gt_class"] == 1]
+
+                st.markdown(f"❌ Gesamt übersehene Boxen: {len(fn_not_detected)} ({len(fn_not_detected)/len(gt_nonempty)*100:.2f} % der Ground Truth)")
+                st.markdown(f"🔹 Übersehene Bolt-Boxen: {len(fn_bolt)} ({len(fn_bolt)/len(gt_bolt)*100 if len(gt_bolt)>0 else 0:.2f} %)")
+                st.markdown(f"🔹 Übersehene Missing Bolt-Boxen: {len(fn_missing)} ({len(fn_missing)/len(gt_missing)*100 if len(gt_missing)>0 else 0:.2f} %)")
+
+            # -----------------------
+            # Klassen-spezifische Recall-Kennzahlen
+            # -----------------------
+            st.subheader("🔹 Klassen-spezifische Recall-Kennzahlen")
+            col1, col2 = st.columns(2)
+            recall_bolt = len(gt_bolt[gt_bolt["match"]]) / len(gt_bolt) if len(gt_bolt) > 0 else 0
+            recall_missing = len(gt_missing[gt_missing["match"]]) / len(gt_missing) if len(gt_missing) > 0 else 0
+            col1.metric("🔩 Bolt Recall", f"{recall_bolt*100:.2f} %", help="Anteil korrekt erkannter vorhandener Schrauben")
+            col2.metric("⚠️ Missing Bolt Recall", f"{recall_missing*100:.2f} %", help="Anteil korrekt erkannter fehlender Schrauben")
 
             # -----------------------
             # Konfusionsmatrix
@@ -179,43 +233,14 @@ Jede Zeile steht für **eine Schraube**, die die KI erkannt oder die Ground Trut
             st.subheader("🧠 Konfusionsmatrix")
             cm = pd.crosstab(df["gt_class"], df["pred_class"], rownames=['Tatsächlich'], colnames=['Vorhergesagt'])
             st.dataframe(cm)
-            st.markdown("""
-Interpretation:
-- Oben links: Bolt korrekt erkannt  
-- Oben rechts: Bolt fälschlicherweise als Missing erkannt  
-- Unten links: Missing Bolt fälschlicherweise als Bolt erkannt  
-- Unten rechts: Missing Bolt korrekt erkannt
-""")
 
             # -----------------------
             # IoU-Verteilung
             # -----------------------
-            st.subheader("📈 Verteilung der IoU")
+            st.subheader("📈 IoU-Verteilung")
             fig, ax = plt.subplots()
             sns.histplot(df["iou"], bins=20, kde=True, ax=ax)
-            ax.set_xlabel("IoU (Überlappung)")
-            ax.set_ylabel("Anzahl")
-            ax.set_title("Genauigkeit der Boxenpositionen")
+            ax.set_xlabel("IoU (0–1)")
+            ax.set_ylabel("Anzahl Boxen")
             st.pyplot(fig)
-            st.markdown("""
-- Werte nahe 1: Boxen exakt getroffen  
-- Werte unter 0.5: KI Box ist deutlich verschoben  
-- Sehr niedrige Werte: KI hat Box stark verfehlt oder Boxgröße passt nicht
-""")
-
-            # -----------------------
-            # Gesamtfazit
-            # -----------------------
-            st.divider()
-            st.markdown("""
-### 🧩 Fazit:
-Dieses Dashboard zeigt alle relevanten Kennzahlen, sowohl **gesamt** als auch **klassen-spezifisch**.  
-
-- Precision → Treffsicherheit der KI  
-- Recall → Vollständigkeit der Erkennung  
-- Klassen-Recall → speziell für Bolt und Missing Bolt getrennt  
-- Konfusionsmatrix → zeigt Fehlklassifikationen  
-- IoU-Verteilung → Qualität der Box-Positionen
-
-So kannst du genau analysieren, **wie zuverlässig die KI fehlende Schrauben erkennt** und wo Verbesserungen nötig sind.
-""")
+            st.markdown("Höhere Werte → Boxen exakt getroffen, niedrige Werte → starke Abweichung der Boxposition oder Größe.")
