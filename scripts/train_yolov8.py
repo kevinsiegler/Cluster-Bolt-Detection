@@ -1,13 +1,36 @@
 # scripts/train_yolov8.py
 from ultralytics import YOLO
+import os
 
-# Modellwahl: startr mit yolov8n (nano) oder yolov8m (medium) für bessere small-object Erkennung.
-MODEL = "yolov8n.pt"  # falls RAM/GPU limitiert: "yolov8n.pt"
+# ============================================================
+# KONFIGURATION
+# ============================================================
+MODEL = "yolov8n.pt"   # oder yolov8m.pt für genauere Erkennung
 DATA = "../dataset/data.yaml"
-IMG_SIZE = 1024    # größere Auflösung hilft bei sehr kleinen Objekten
-EPOCHS = 30 
-BATCH = 8          # an GPU memory anpassen, CPU: setze klein
-DEVICE = "cpu"         # GPU id oder "cpu"
+IMG_SIZE = 1024
+EPOCHS = 1
+BATCH = 8
+DEVICE = "cpu"
+TRAIN_NAME = "train_one_epoch_v1"   # beliebiger Name für das Training
 
+# Ordnerstruktur
+PROJECT_DIR = "runs/detect/training"
+
+# Falls der Ordner noch nicht existiert, wird er erstellt
+os.makedirs(PROJECT_DIR, exist_ok=True)
+
+# ============================================================
+# TRAINING
+# ============================================================
 model = YOLO(MODEL)
-model.train(data=DATA, epochs=EPOCHS, imgsz=IMG_SIZE, batch=BATCH, device=DEVICE, name="bolt_run01")
+model.train(
+    data=DATA,
+    epochs=EPOCHS,
+    imgsz=IMG_SIZE,
+    batch=BATCH,
+    device=DEVICE,
+    name=TRAIN_NAME,
+    project=PROJECT_DIR  # <- sorgt für saubere Struktur
+)
+
+print(f"✅ Training abgeschlossen. Ergebnisse in: {os.path.join(PROJECT_DIR, TRAIN_NAME)}")

@@ -2,4 +2,4 @@ images/
 dataset/
 runs/
 weights/
-predict/
+evaluations/

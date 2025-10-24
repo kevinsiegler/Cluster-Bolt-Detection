@@ -128,26 +128,53 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 # ============================================================
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+EVAL_BASE = os.path.join(BASE_DIR, "scripts", "runs", "detect", "evaluations")
+
+# Ground Truth bleibt gleich
 DEFAULT_GT = os.path.join(BASE_DIR, "dataset", "labels", "val")
-DEFAULT_PRED = os.path.join(BASE_DIR, "scripts", "runs", "detect", "predict", "labels")
 
-st.title("🔩 YOLOv8 Dashboard – Schraubenanalyse")
-st.write("Bewertet die KI-Leistung bei der Erkennung von **vorhandenen Schrauben (Bolt)** und **fehlenden Schrauben (Missing Bolt)**.")
+# Streamlit Layout
+st.set_page_config(page_title="YOLOv8 Schrauben-Dashboard", layout="wide")
+st.title("🔩 YOLOv8 Dashboard – Schraubenanalyse (Multi-Evaluation)")
 
-gt_dir = st.text_input("📁 Ground Truth Pfad:", DEFAULT_GT)
-pred_dir = st.text_input("📁 Prediction Pfad:", DEFAULT_PRED)
+st.write("""
+Dieses Dashboard zeigt mehrere KI-Auswertungen nebeneinander.  
+Wähle oben die gewünschte **Evaluierung** aus, um deren Analyse zu sehen.
+""")
 
-if st.button("🚀 Auswertung starten"):
-    if not os.path.exists(gt_dir):
-        st.error(f"❌ Ground Truth Pfad nicht gefunden: {gt_dir}")
-    elif not os.path.exists(pred_dir):
-        st.error(f"❌ Prediction Pfad nicht gefunden: {pred_dir}")
-    else:
-        df = evaluate_model(gt_dir, pred_dir)
-        if df.empty:
-            st.warning("⚠️ Keine Labels gefunden!")
+# Alle Evaluierungsordner automatisch auflisten
+if not os.path.exists(EVAL_BASE):
+    st.warning(f"Kein Evaluations-Ordner gefunden unter: `{EVAL_BASE}`")
+    st.stop()
+
+available_evals = sorted([d for d in os.listdir(EVAL_BASE)
+                          if os.path.isdir(os.path.join(EVAL_BASE, d))])
+
+if not available_evals:
+    st.warning("⚠️ Keine vorhandenen Evaluierungen gefunden!")
+    st.stop()
+
+# Tabs für jede Evaluierung
+tabs = st.tabs(available_evals)
+
+for i, eval_name in enumerate(available_evals):
+    with tabs[i]:
+        pred_dir = os.path.join(EVAL_BASE, eval_name, "labels")
+
+        st.subheader(f"📁 Evaluierung: `{eval_name}`")
+        st.markdown(f"**Pfad:** `{pred_dir}`")
+
+        # === dein bisheriger Code ab hier bleibt exakt gleich ===
+        if not os.path.exists(DEFAULT_GT):
+            st.error(f"❌ Ground Truth Pfad nicht gefunden: {DEFAULT_GT}")
+        elif not os.path.exists(pred_dir):
+            st.error(f"❌ Prediction Pfad nicht gefunden: {pred_dir}")
         else:
-            st.success("✅ Auswertung abgeschlossen!")
+            df = evaluate_model(DEFAULT_GT, pred_dir)
+            if df.empty:
+                st.warning("⚠️ Keine Labels gefunden!")
+            else:
+                st.success("✅ Auswertung abgeschlossen!")
 
             # ============================================================
             # METRIKEN
@@ -240,22 +267,21 @@ if st.button("🚀 Auswertung starten"):
                     col4.metric("❌ Nicht erkannt", f"{missed_percent:.2f} %")
 
             # ------------------------------------------------------------
+            # ------------------------------------------------------------
             # Konfusionsmatrix
             # ------------------------------------------------------------
-            st.subheader("🧠 Konfusionsmatrix")
+            with st.expander("🧠 Konfusionsmatrix", expanded=False):
+                cm = pd.crosstab(df["gt_class"], df["pred_class"],
+                                rownames=['Tatsächlich (Ground Truth)'],
+                                colnames=['Vorhergesagt (Prediction)']).fillna(0)
 
-            cm = pd.crosstab(df["gt_class"], df["pred_class"],
-                             rownames=['Tatsächlich (Ground Truth)'],
-                             colnames=['Vorhergesagt (Prediction)']).fillna(0)
+                fig, ax = plt.subplots()
+                sns.heatmap(cm, annot=True, fmt="g", cmap="YlGnBu", ax=ax)
+                ax.set_xlabel("Vorhergesagte Klasse")
+                ax.set_ylabel("Tatsächliche Klasse")
+                ax.set_title("Konfusionsmatrix der Klassenzuordnung")
+                st.pyplot(fig)
 
-            fig, ax = plt.subplots()
-            sns.heatmap(cm, annot=True, fmt="g", cmap="YlGnBu", ax=ax)
-            ax.set_xlabel("Vorhergesagte Klasse")
-            ax.set_ylabel("Tatsächliche Klasse")
-            ax.set_title("Konfusionsmatrix der Klassenzuordnung")
-            st.pyplot(fig)
-
-            with st.expander("📘 Erklärung der Konfusionsmatrix", expanded=False):
                 st.markdown("""
                 Die **Konfusionsmatrix** zeigt, wie gut die KI die beiden Klassen unterscheiden kann:
 
@@ -274,16 +300,16 @@ if st.button("🚀 Auswertung starten"):
             # ------------------------------------------------------------
             # IoU-Verteilung
             # ------------------------------------------------------------
-            st.subheader("📈 IoU-Verteilung")
-            fig, ax = plt.subplots()
-            sns.histplot(df["iou"], bins=20, kde=True, ax=ax)
-            ax.set_xlabel("IoU (0–1)")
-            ax.set_ylabel("Anzahl Boxen")
-            ax.set_title("Verteilung der IoU-Werte")
-            st.pyplot(fig)
+            with st.expander("📈 IoU-Verteilung", expanded=False):
+                fig, ax = plt.subplots()
+                sns.histplot(df["iou"], bins=20, kde=True, ax=ax)
+                ax.set_xlabel("IoU (0–1)")
+                ax.set_ylabel("Anzahl Boxen")
+                ax.set_title("Verteilung der IoU-Werte")
+                st.pyplot(fig)
 
-            st.markdown("""
-            💡 **Interpretation:**  
-            - Hohe IoU-Werte (>0.75) = sehr genaue Positionierung der Box.  
-            - Niedrige IoU-Werte (<0.3) = Box sitzt zu weit entfernt oder hat falsche Größe.
-            """)
+                st.markdown("""
+                💡 **Interpretation:**  
+                - Hohe IoU-Werte (>0.75) = sehr genaue Positionierung der Box.  
+                - Niedrige IoU-Werte (<0.3) = Box sitzt zu weit entfernt oder hat falsche Größe.
+                """)
