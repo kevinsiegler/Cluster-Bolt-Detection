@@ -4,14 +4,14 @@ import os
 from datetime import datetime
 
 # Pfad zu deinem trainierten Modell
-TRAIN_NAME = "train_30_epoch_(maybe)" #Trainingsdatei einfügen ###############################################################
+TRAIN_NAME = "train_30_epoch" #Trainingsdatei einfügen ###############################################################
 MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
 
 # Quelle: Ordner mit Bildern oder einzelnes Bild
 IMG = "../dataset/images/val"
 
 # Benutzerdefinierter Name für diese Evaluierung
-OUTPUT_NAME = "infer_train_30_epoch_(maybe)"  # <--- deinen Namen setzen #####################################################
+OUTPUT_NAME = "infer_train_30_epoch_conf(0.4)"  # <--- deinen Namen setzen #####################################################
 
 # Basispfad für alle Evaluierungen
 EVAL_BASE = "runs/detect/evaluations"
@@ -28,7 +28,7 @@ model = YOLO(MODEL_PATH)
 # Inferenz starten und in den Evaluations-Ordner speichern
 results = model.predict(
     source=IMG,
-    conf=0.25,
+    conf=0.40,
     imgsz=1024,
     save=True,
     save_txt=True,
