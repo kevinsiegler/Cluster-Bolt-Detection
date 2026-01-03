@@ -11,7 +11,7 @@ MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
 IMG = "../dataset/images/val"
 
 # Benutzerdefinierter Name für diese Evaluierung
-OUTPUT_NAME = "infer_train_30_epoch_conf(0.1)"  # <--- deinen Namen setzen #####################################################
+OUTPUT_NAME = "infer_train_30_epoch_all_confidence"  # <--- deinen Namen setzen #####################################################
 
 # Basispfad für alle Evaluierungen
 EVAL_BASE = "runs/detect/evaluations"
@@ -25,16 +25,14 @@ OUTPUT_DIR = os.path.join(EVAL_BASE, OUTPUT_NAME)
 # Modell laden
 model = YOLO(MODEL_PATH)
 
-# Inferenz starten und in den Evaluations-Ordner speichern
-results = model.predict(
-    source=IMG,
-    conf=0.1,
-    imgsz=1024,
-    save=True,
-    save_txt=True,
-    save_json=True,
-    project=EVAL_BASE,     # Basis: runs/detect/evaluations
-    name=OUTPUT_NAME,      # dein Ordnername
-    exist_ok=False         # falls schon vorhanden, macht automatisch _2, _3 etc.
-)
 
+# Val-Modus erzeugt JSON
+metrics = model.val(
+    data="../dataset/data.yaml",  # Dataset YAML
+    conf=0.05,
+    imgsz=1024,
+    save_json=True,
+    project="runs/detect/evaluations",
+    name=OUTPUT_NAME,
+    exist_ok=True
+)
