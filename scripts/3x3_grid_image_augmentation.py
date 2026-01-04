@@ -75,16 +75,33 @@ def copy_paste(img,bboxes,offset=20):
         new_boxes.append([x_new,y_new,x_end,y_end])
     return img_cp,bboxes+new_boxes
 
-def mosaic(img):
-    h,w = img.shape[:2]
+def mosaic_with_bboxes(img, bboxes):
+    h, w = img.shape[:2]
     cut_h, cut_w = h//2, w//2
     mosaic_img = np.zeros_like(img)
-    # 4 Quadranten aus zufälligen Positionen
-    for i, (y,x) in enumerate([(0,0),(0,cut_w),(cut_h,0),(cut_h,cut_w)]):
-        ry = random.randint(0,h-cut_h)
-        rx = random.randint(0,w-cut_w)
-        mosaic_img[y:y+cut_h, x:x+cut_w] = img[ry:ry+cut_h, rx:rx+cut_w]
-    return mosaic_img
+    new_boxes = []
+
+    # 4 Quadranten
+    positions = [(0,0),(0,cut_w),(cut_h,0),(cut_h,cut_w)]
+    for y_pos, x_pos in positions:
+        # Zufälliger Ausschnitt
+        ry = random.randint(0, h-cut_h)
+        rx = random.randint(0, w-cut_w)
+        mosaic_img[y_pos:y_pos+cut_h, x_pos:x_pos+cut_w] = img[ry:ry+cut_h, rx:rx+cut_w]
+
+        # Bounding Boxes im Ausschnitt anpassen
+        for box in bboxes:
+            x1, y1, x2, y2 = box
+            # Prüfen ob Box vollständig im Ausschnitt liegt
+            if rx <= x1 < x2 <= rx+cut_w and ry <= y1 < y2 <= ry+cut_h:
+                # Koordinaten relativ zum Mosaic-Quadranten verschieben
+                nx1 = x1 - rx + x_pos
+                ny1 = y1 - ry + y_pos
+                nx2 = x2 - rx + x_pos
+                ny2 = y2 - ry + y_pos
+                new_boxes.append([nx1, ny1, nx2, ny2])
+
+    return mosaic_img, new_boxes
 
 # ============================================
 # 1️⃣ Originalbild + Label laden
@@ -156,9 +173,9 @@ augmented.append(draw_bboxes(cv2.cvtColor(cp_img,cv2.COLOR_BGR2RGB),cp_boxes,thi
 titles.append("CopyPaste: Schrauben leicht dupliziert")
 
 # Mosaic
-mosaic_img = mosaic(img)
-augmented.append(draw_bboxes(cv2.cvtColor(mosaic_img,cv2.COLOR_BGR2RGB),bboxes,thickness=6))
-titles.append("Mosaic: 4 zufällige Bildausschnitte kombiniert")
+mosaic_img, mosaic_boxes = mosaic_with_bboxes(img, bboxes)
+augmented.append(draw_bboxes(cv2.cvtColor(mosaic_img,cv2.COLOR_BGR2RGB),mosaic_boxes,thickness=6))
+titles.append("Mosaic: 4 zufällige Ausschnitte kombiniert")
 
 # ============================================
 # 3️⃣ Grid Plot 3x3 mit weißem Hintergrund für Titel
