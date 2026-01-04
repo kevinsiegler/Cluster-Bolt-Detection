@@ -88,7 +88,7 @@ elif weight_mode == "Recall (Alles finden)": beta = 2.0
 st.sidebar.info(f"Aktueller Fokus: **{weight_mode}** (Beta={beta})")
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-EVAL_BASE = os.path.join(BASE_DIR, "scripts", "runs", "detect", "evaluations")
+EVAL_BASE = os.path.join(BASE_DIR, "scripts", "runs", "detect", "evaluations_2")
 DEFAULT_GT = os.path.join(BASE_DIR, "dataset", "labels", "val")
 
 eval_folders = [d for d in os.listdir(EVAL_BASE) if os.path.isdir(os.path.join(EVAL_BASE, d))]

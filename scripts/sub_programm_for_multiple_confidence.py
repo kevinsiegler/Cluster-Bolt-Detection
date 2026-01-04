@@ -9,14 +9,14 @@ from ultralytics import YOLO
 conf = float(sys.argv[1])
 
 # Pfad zu deinem trainierten Modell
-TRAIN_NAME = "train_30_epoch"
+TRAIN_NAME = "train_30_epoch_with_parameter_s" 
 MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
 
 # Quelle
 IMG = "../dataset/images/val"
 
 # Basispfad für alle Evaluierungen
-EVAL_BASE = "runs/detect/evaluations"
+EVAL_BASE = "runs/detect/evaluations_2"
 os.makedirs(EVAL_BASE, exist_ok=True)
 
 # Dynamischer Output-Name

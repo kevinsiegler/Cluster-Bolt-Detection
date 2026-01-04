@@ -11,10 +11,10 @@ MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
 IMG = "../dataset/images/val"
 
 # Benutzerdefinierter Name für diese Evaluierung
-OUTPUT_NAME = "infer_train_30_epoch_conf(0.1)"  # <--- deinen Namen setzen #####################################################
+OUTPUT_NAME = "infer_train_30_epoch_conf(0.4)"  # <--- deinen Namen setzen #####################################################
 
 # Basispfad für alle Evaluierungen
-EVAL_BASE = "runs/detect/evaluations"
+EVAL_BASE = "runs/detect/testing"
 
 # Sicherstellen, dass der übergeordnete Evaluations-Ordner existiert
 os.makedirs(EVAL_BASE, exist_ok=True)
@@ -28,11 +28,11 @@ model = YOLO(MODEL_PATH)
 # Inferenz starten und in den Evaluations-Ordner speichern
 results = model.predict(
     source=IMG,
-    conf=0.1,
+    conf=0.4,
     imgsz=1024,
-    save=True,
+    save=False,
     save_txt=True,
-    save_json=True,
+    save_json=False,
     project=EVAL_BASE,     # Basis: runs/detect/evaluations
     name=OUTPUT_NAME,      # dein Ordnername
     exist_ok=False         # falls schon vorhanden, macht automatisch _2, _3 etc.

@@ -128,7 +128,7 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 # ============================================================
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-EVAL_BASE = os.path.join(BASE_DIR, "scripts", "runs", "detect", "evaluations")
+EVAL_BASE = os.path.join(BASE_DIR, "scripts", "runs", "detect", "testing")
 
 # Ground Truth bleibt gleich
 DEFAULT_GT = os.path.join(BASE_DIR, "dataset", "labels", "val")
