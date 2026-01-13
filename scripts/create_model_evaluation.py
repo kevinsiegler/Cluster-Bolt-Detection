@@ -11,10 +11,9 @@ MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
 IMG = "../dataset/images/val"
 
 # Benutzerdefinierter Name für diese Evaluierung
-OUTPUT_NAME = "infer_train_30_epoch_conf(0.4)"  # <--- deinen Namen setzen #####################################################
-
+OUTPUT_NAME = f"infer_{TRAIN_NAME}_conf(0.4)"  # <--- deinen Namen setzen #####################################################
 # Basispfad für alle Evaluierungen
-EVAL_BASE = "runs/detect/testing"
+EVAL_BASE = "runs/detect/evaluations_w_different_amounts_data"
 
 # Sicherstellen, dass der übergeordnete Evaluations-Ordner existiert
 os.makedirs(EVAL_BASE, exist_ok=True)

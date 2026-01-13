@@ -1,24 +1,33 @@
-# scripts/master_confidence.py
 import subprocess
 import sys
+import os
 
-# Confidence-Werte: 0.2 → 1.0 in 0.05 Schritten
-conf_values = [round(0.05 + 0.05 * i, 2) for i in range(19)]
+python_executable = sys.executable
 
-python_executable = sys.executable  # garantiert gleiche Python-Version
+# Ordner mit ALLEN Trainingsläufen
+TRAIN_BASE_DIR = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\runs\detect\train_w_different_amounts_data"
 
-for conf in conf_values:
-    print(f"\n🚀 Starte neuen Prozess für conf={conf}")
+# Alle Unterordner einsammeln, die mit "train_" beginnen
+train_runs = sorted([
+    d for d in os.listdir(TRAIN_BASE_DIR)
+    if d.startswith("train_") and
+       os.path.isdir(os.path.join(TRAIN_BASE_DIR, d))
+])
+
+print(f"🔍 Gefundene Trainingsmodelle: {len(train_runs)}")
+
+for train_name in train_runs:
+    print(f"\n🚀 Starte Inferenz für Modell: {train_name}")
 
     subprocess.run(
         [
             python_executable,
             "sub_programm_for_multiple_confidence.py",
-            str(conf)
+            train_name
         ],
         check=True
     )
 
-    print("🧹 Prozess beendet – Speicher vollständig freigegeben")
+    print("🧹 Modell abgeschlossen – Speicher freigegeben")
 
-print("\n🎉 Alle Confidence-Durchläufe abgeschlossen.")
+print("\n🎉 Alle Trainingsmodelle wurden ausgewertet.")

@@ -1,38 +1,51 @@
-# scripts/confidence_analysis.py
 import sys
 import os
 from ultralytics import YOLO
 
 # =====================
-# Confidence aus Argument
+# Modellname aus Argument
 # =====================
-conf = float(sys.argv[1])
+TRAIN_NAME = sys.argv[1]
 
-# Pfad zu deinem trainierten Modell
-TRAIN_NAME = "train_30_epoch_with_parameter_n" 
-MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
+# =====================
+# Fixer Confidence-Wert
+# =====================
+CONF = 0.2   # ← hier EINMAL festlegen
 
-# Quelle
+# =====================
+# Pfade
+# =====================
+MODEL_PATH = (
+    f"runs/detect/train_w_different_amounts_data/"
+    f"{TRAIN_NAME}/weights/best.pt"
+)
+
 IMG = "../dataset/images/val"
 
-# Basispfad für alle Evaluierungen
-EVAL_BASE = "runs/detect/evaluations_30_w_param_n"
+EVAL_BASE = "runs/detect/evaluations_w_different_amounts_data_conf(0.2)"
 os.makedirs(EVAL_BASE, exist_ok=True)
 
-# Dynamischer Output-Name
-OUTPUT_NAME = f"infer_{TRAIN_NAME}_conf({conf})"
+OUTPUT_NAME = f"infer_{TRAIN_NAME}"
 
-print(f"Starte Inferenz mit conf={conf}")
+# =====================
+# Sicherheitscheck
+# =====================
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"❌ Modell nicht gefunden: {MODEL_PATH}")
 
-# Modell laden
+print(f"🚀 Starte Inferenz")
+print(f"   Modell: {TRAIN_NAME}")
+print(f"   Confidence: {CONF}")
+
+# =====================
+# YOLO Inferenz
+# =====================
 model = YOLO(MODEL_PATH)
 
-# Inferenz starten
 model.predict(
     source=IMG,
-    conf=conf,
-    imgsz=1024,        # bleibt wie gewünscht
-    #batch=1,            Peak-Schutz (empfohlen)
+    conf=CONF,
+    imgsz=1024,
     save=False,
     save_txt=True,
     save_json=False,
@@ -41,4 +54,4 @@ model.predict(
     exist_ok=False
 )
 
-print(f"✅ Inferenz abgeschlossen: conf={conf}")
+print(f"✅ Inferenz abgeschlossen für {TRAIN_NAME}")
