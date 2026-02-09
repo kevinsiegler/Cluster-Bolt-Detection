@@ -93,7 +93,7 @@ weight_mode = st.sidebar.select_slider(
     value="Ausgewogen (F1)"
 )
 
-beta = {"Precision (Keine Fehler)": 0.5, "Ausgewogen (F1)": 1.0, "Recall (Alles finden)": 2.0}[weight_mode]
+beta = {"Precision (Keine Fehler)": 0.5, "Ausgewogen (F1)": 1.0, "Recall (Alles finden)": 2.0}[weight_mode  ]
 st.sidebar.info(f"Beta = {beta}")
 
 # ============================================================

@@ -3,3 +3,8 @@ dataset/
 runs/
 weights/
 evaluations/
+data/
+infer/
+testing/
+training/
+outputs/
