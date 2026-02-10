@@ -124,16 +124,19 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 
 
 # ============================================================
+# ABSOLUTE PFADE (FIXED LOCATIONS)
+# ============================================================
+
+EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\infer\evaluations_30_n"
+
+# Ground Truth (immer gleich)
+DEFAULT_GT = r"C:\Users\Kevin\Clustererkennung\bolt_detection\dataset\labels\val"
+
+
+# ============================================================
 # DASHBOARD
 # ============================================================
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-EVAL_BASE = os.path.join(BASE_DIR, "scripts", "runs", "detect", "testing")
-
-# Ground Truth bleibt gleich
-DEFAULT_GT = os.path.join(BASE_DIR, "dataset", "labels", "val")
-
-# Streamlit Layout
 st.set_page_config(page_title="YOLOv8 Schrauben-Dashboard", layout="wide")
 st.title("🔩 YOLOv8 Dashboard – Schraubenanalyse (Multi-Evaluation)")
 
@@ -164,7 +167,6 @@ for i, eval_name in enumerate(available_evals):
         st.subheader(f"📁 Evaluierung: `{eval_name}`")
         st.markdown(f"**Pfad:** `{pred_dir}`")
 
-        # === dein bisheriger Code ab hier bleibt exakt gleich ===
         if not os.path.exists(DEFAULT_GT):
             st.error(f"❌ Ground Truth Pfad nicht gefunden: {DEFAULT_GT}")
         elif not os.path.exists(pred_dir):
@@ -187,7 +189,6 @@ for i, eval_name in enumerate(available_evals):
             missed = df[(df["gt_class"].notna()) & (df["pred_class"].isna())]
             false_positives = df[(df["gt_class"].isna()) & (df["pred_class"].notna())]
 
-            # Erweiterte Precision und Recall
             recall = len(tp_correct) / (len(tp_correct) + len(wrong_class) + len(missed)) if len(gt_nonempty) > 0 else 0
             precision = len(tp_correct) / (
                 len(tp_correct) + len(wrong_class) + len(false_positives) + len(missed)
@@ -195,26 +196,22 @@ for i, eval_name in enumerate(available_evals):
             f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
             mean_iou = df["iou"].mean()
 
-            # ------------------------------------------------------------
             # Gesamtmetriken mit Erklärungen
-            # ------------------------------------------------------------
             with st.expander("📘 Gesamtmetriken & Erklärungen", expanded=True):
                 st.markdown("""
                 ### 📈 **Gesamtmetriken – Verständlich erklärt**
 
                 - 🎯 **Erweiterte Precision (Genauigkeit)**  
                   Anteil korrekt erkannter Objekte an **allen Boxen (inkl. verfehlter & überflüssiger)**.  
-                  Zeigt, wie „sauber“ das Gesamtergebnis ist.
 
                 - ✅ **Erweiterter Recall (Vollständigkeit)**  
                   Anteil korrekt erkannter Ground Truths.  
-                  Zeigt, wie viele echte Objekte die KI wirklich gefunden hat.
 
                 - ⚖️ **F1-Score:**  
                   Harmonisches Mittel von Precision und Recall – kombiniert Zuverlässigkeit & Vollständigkeit.
 
                 - 📏 **Mittlere IoU:**  
-                  Durchschnittliche Überlappung (Intersection over Union) zwischen Ground Truth & Prediction.
+                  Durchschnittliche Überlappung zwischen Ground Truth & Prediction.
                 """)
 
                 col1, col2, col3, col4 = st.columns(4)
@@ -223,12 +220,11 @@ for i, eval_name in enumerate(available_evals):
                 col3.metric("⚖️ F1-Score", f"{f1*100:.2f} %")
                 col4.metric("📏 Mittlere IoU", f"{mean_iou*100:.2f} %")
 
-            # ------------------------------------------------------------
             # Klassenweise Analyse
-            # ------------------------------------------------------------
             st.subheader("🔹 Klassenweise Analyse")
 
             for class_id, class_name in [(0, "Bolt (vorhanden)"), (1, "Missing Bolt (fehlend)")]:
+
                 gt_class_df = df[df["gt_class"] == class_id]
                 tp_c = gt_class_df[gt_class_df["match"]]
                 wrong_c = gt_class_df[(gt_class_df["pred_class"].notna()) & (~gt_class_df["match"])]
@@ -253,11 +249,6 @@ for i, eval_name in enumerate(available_evals):
                     - ⚠️ **Falsch klassifiziert:** {len(wrong_c)}  
                     - ❌ **Nicht erkannt:** {missed_count} ({missed_percent:.2f}% der Ground Truths)  
                     - 📦 **Überflüssige Boxen:** {len(fp_c)}
-
-                    **Erklärungen:**
-                    - 🎯 **Precision*** = Wie genau alle Boxen (inkl. Fehler & fehlender) insgesamt waren.  
-                    - ✅ **Recall*** = Wie viele Ground Truths richtig erkannt wurden.  
-                    - ⚖️ **F1-Score** = Kombination aus beiden für ausgewogene Bewertung.
                     """)
 
                     col1, col2, col3, col4 = st.columns(4)
@@ -266,10 +257,7 @@ for i, eval_name in enumerate(available_evals):
                     col3.metric("⚖️ F1-Score", f"{f1_c*100:.2f} %")
                     col4.metric("❌ Nicht erkannt", f"{missed_percent:.2f} %")
 
-            # ------------------------------------------------------------
-            # ------------------------------------------------------------
             # Konfusionsmatrix
-            # ------------------------------------------------------------
             with st.expander("🧠 Konfusionsmatrix", expanded=False):
                 cm = pd.crosstab(df["gt_class"], df["pred_class"],
                                 rownames=['Tatsächlich (Ground Truth)'],
@@ -282,24 +270,7 @@ for i, eval_name in enumerate(available_evals):
                 ax.set_title("Konfusionsmatrix der Klassenzuordnung")
                 st.pyplot(fig)
 
-                st.markdown("""
-                Die **Konfusionsmatrix** zeigt, wie gut die KI die beiden Klassen unterscheiden kann:
-
-                | Zelle | Bedeutung |
-                |-------|------------|
-                | **[0,0]** | ✅ Bolt korrekt erkannt |
-                | **[1,1]** | ✅ Missing Bolt korrekt erkannt |
-                | **[0,1]** | ⚠️ Bolt fälschlich als Missing Bolt erkannt |
-                | **[1,0]** | ⚠️ Missing Bolt fälschlich als Bolt erkannt |
-
-                🔹 **Interpretation:**  
-                - Hohe Werte auf der Diagonalen → gute Klassentrennung.  
-                - Werte außerhalb der Diagonalen → Verwechslungen zwischen den Klassen.
-                """)
-
-            # ------------------------------------------------------------
             # IoU-Verteilung
-            # ------------------------------------------------------------
             with st.expander("📈 IoU-Verteilung", expanded=False):
                 fig, ax = plt.subplots()
                 sns.histplot(df["iou"], bins=20, kde=True, ax=ax)
@@ -307,9 +278,3 @@ for i, eval_name in enumerate(available_evals):
                 ax.set_ylabel("Anzahl Boxen")
                 ax.set_title("Verteilung der IoU-Werte")
                 st.pyplot(fig)
-
-                st.markdown("""
-                💡 **Interpretation:**  
-                - Hohe IoU-Werte (>0.75) = sehr genaue Positionierung der Box.  
-                - Niedrige IoU-Werte (<0.3) = Box sitzt zu weit entfernt oder hat falsche Größe.
-                """)
