@@ -4,7 +4,11 @@ import os
 TRAIN_NAME = "train_30_epoch"
 MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
 IMG = "../dataset/images/val"
-OUTPUT_NAME = f"infer_{TRAIN_NAME}_conf(0.01)"
+
+# Um exakt die gleichen Labels wie infer_model.py zu erhalten, muss die Confidence übereinstimmen.
+CONF = 0.4
+
+OUTPUT_NAME = f"infer_{TRAIN_NAME}_conf({CONF})"
 EVAL_BASE = "runs/detect/evaluations_w_confidence_txt_data"
 os.makedirs(EVAL_BASE, exist_ok=True)
 OUTPUT_DIR = os.path.join(EVAL_BASE, OUTPUT_NAME)
@@ -12,10 +16,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 model = YOLO(MODEL_PATH)
 
-# conf=0.0, damit alle Boxen behalten werden, du filterst später selbst
 results = model.predict(
     source=IMG,
-    conf=0.01,
+    conf=CONF,
     imgsz=1024,
     save=False
 )

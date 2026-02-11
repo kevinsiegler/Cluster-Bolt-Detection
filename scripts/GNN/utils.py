@@ -1,92 +1,79 @@
-import numpy as np
+import os
 import torch
+import numpy as np
 from torch_geometric.data import Data
-from torch_geometric.nn import knn_graph
-from typing import List, Tuple
+from sklearn.neighbors import NearestNeighbors
 
-def parse_yolo_labels(file_path: str, is_inference: bool = False) -> np.ndarray:
+def load_yolo_labels(label_path, with_confidence=False):
     """
-    Liest eine YOLO-Labeldatei und gibt die Bounding-Box-Daten als NumPy-Array zurück.
-
+    Liest eine einzelne YOLO-Label-Datei.
+    
     Args:
-        file_path (str): Der Pfad zur .txt-Datei.
-        is_inference (bool): True, wenn die Datei Konfidenzwerte enthält (6 Spalten).
-                             False für Trainingsdateien (5 Spalten).
+        label_path (str): Pfad zur .txt-Datei.
+        with_confidence (bool): Ob die Datei eine Konfidenzspalte enthält.
+                                Format: (class, x, y, w, h, conf)
+                                Sonst: (class, x, y, w, h)
 
     Returns:
-        np.ndarray: Ein Array mit den Bounding-Box-Daten.
-                    Format Training: [x, y, w, h]
-                    Format Inferenz: [class_id, x, y, w, h, confidence]
-                    Gibt ein leeres Array zurück, wenn die Datei leer ist.
+        np.array: Ein Numpy-Array mit den Label-Daten.
+                  Gibt ein leeres Array zurück, wenn die Datei leer ist oder nicht existiert.
     """
-    try:
-        # Manuelles Einlesen ist robuster gegen Formatierungsprobleme als np.loadtxt
-        # und verhindert Warnungen bei leeren Dateien.
-        with open(file_path, 'r') as f:
-            lines = [line.strip() for line in f if line.strip()]
+    if not os.path.exists(label_path):
+        return np.empty((0, 6 if with_confidence else 5))
+        
+    with open(label_path, "r") as f:
+        lines = f.readlines()
+    
+    data = []
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) > 0:
+            data.append(list(map(float, parts)))
+            
+    if not data:
+        return np.empty((0, 6 if with_confidence else 5))
 
-        if not lines:
-            return np.array([])
+    return np.array(data)
 
-        # Konvertiere Textzeilen zu Float-Listen
-        data_list = [[float(x) for x in line.split()] for line in lines]
-        data = np.array(data_list)
 
-        if is_inference:
-            # Format: class_id, x, y, w, h, confidence
-            return data
-        else:
-            # Format: class_id, x, y, w, h -> wir ignorieren class_id
-            return data[:, 1:] if data.shape[1] >= 5 else np.array([])
-    except Exception as e:
-        print(f"Fehler beim Parsen der Datei {file_path}: {e}")
-        return np.array([])
-
-def build_graph_from_boxes(
-    boxes: torch.Tensor, 
-    k: int, 
-    is_inference: bool = False
-) -> Data:
+def build_knn_graph(boxes, k):
     """
-    Erstellt einen Graphen aus Bounding-Box-Daten mithilfe von k-Nearest-Neighbors.
+    Erstellt einen k-NN-Graphen aus einer Liste von Bounding Boxes.
 
     Args:
-        boxes (torch.Tensor): Ein Tensor mit den Bounding-Box-Daten.
-        k (int): Die Anzahl der nächsten Nachbarn für den k-NN-Graphen.
-        is_inference (bool): True, um die passenden Node-Features für die Inferenz zu verwenden.
+        boxes (np.array): Array von Boxen, Shape (N, 4), mit [x, y, w, h].
+        k (int): Anzahl der nächsten Nachbarn.
 
     Returns:
-        torch_geometric.data.Data: Das Graph-Datenobjekt.
+        torch_geometric.data.Data: Ein Graph-Objekt für PyG.
+                                   Gibt None zurück, wenn keine Boxen vorhanden sind.
     """
-    if boxes.numel() == 0:
-        # Behandelt den Fall leerer Inputs
-        feature_dim = 5 if is_inference else 4
-        return Data(x=torch.empty(0, feature_dim), edge_index=torch.empty(2, 0, dtype=torch.long))
+    if boxes.shape[0] == 0:
+        return None
 
-    # Node-Features definieren
-    if is_inference:
-        # Inferenz: [x, y, w, h, confidence]
-        # Wir nutzen nur [x, y, w, h] (Indizes 1 bis 5), um Konsistenz mit dem Training zu wahren.
-        node_features = boxes[:, 1:5]
-    else:
-        # Training: [x, y, w, h]
-        node_features = boxes
+    # Node features sind die Box-Koordinaten
+    x = torch.tensor(boxes, dtype=torch.float)
+    num_nodes = x.shape[0]
 
-    # Kanten basierend auf den (x, y)-Koordinaten der Bounding-Box-Zentren erstellen
-    # PyG's knn_graph erwartet einen Node-Feature-Matrix, um die Distanz zu berechnen.
-    # Wir verwenden nur die Koordinaten (x, y) für die k-NN-Suche.
-    box_centers = node_features[:, :2]
+    # Kanten mit k-NN erstellen
+    # Wir brauchen k Nachbarn, also fragen wir nach k+1, da der Punkt selbst der erste Nachbar ist.
+    # Sicherstellen, dass k nicht größer ist als die Anzahl der Punkte.
+    n_neighbors = min(k + 1, num_nodes)
     
-    # Sicherstellen, dass k nicht größer ist als die Anzahl der Knoten - 1
-    num_nodes = node_features.shape[0]
-    actual_k = min(k, num_nodes - 1)
-
-    if actual_k <= 0:
-        # Wenn nur ein Knoten vorhanden ist, gibt es keine Kanten
-        edge_index = torch.empty(2, 0, dtype=torch.long)
-    else:
-        edge_index = knn_graph(box_centers, k=actual_k, loop=False) # [2]
-
-    graph = Data(x=node_features, edge_index=edge_index)
+    # Verwende nur die Mittelpunkte (x, y) für die Nachbarschaftssuche
+    positions = boxes[:, :2]
     
-    return graph
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='ball_tree').fit(positions)
+    _, indices = nbrs.kneighbors(positions)
+    
+    src = []
+    dst = []
+    # Indizes durchgehen, um Kanten zu erstellen
+    for i, neighbors in enumerate(indices):
+        for j in neighbors[1:]: # Den ersten Nachbarn (sich selbst) überspringen
+            src.append(i)
+            dst.append(j)
+            
+    edge_index = torch.tensor([src, dst], dtype=torch.long)
+
+    return Data(x=x, edge_index=edge_index)

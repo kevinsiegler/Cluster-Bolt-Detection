@@ -1,147 +1,98 @@
-# GNN-basierter Filter für YOLOv8-Ergebnisse
+# GNN Spatial Validator – README
 
-Dieses Projekt implementiert eine zweite KI-Schicht in Form eines Graph Neural Networks (GNN), um die Ergebnisse eines YOLOv8-Modells zur Schraubenerkennung zu validieren und zu filtern.
+## Ziel des Systems
 
-## 🎯 Projektziel
+Dieses System dient als **räumliche Validierungsschicht nach YOLOv8**, um die Präzision der Schraubendetektion zu erhöhen.
 
-Das primäre Ziel ist die Reduzierung von *False Positives* aus dem YOLO-Modell, ohne dabei den *Recall* zu beeinträchtigen. Das GNN analysiert nicht die Bilddaten, sondern ausschließlich die **räumliche Anordnung** der von YOLO erkannten Bounding Boxes. Es lernt das typische Layout von Schrauben auf einem "gesunden" Fahrzeugunterboden und identifiziert Ausreißer, die strukturell unplausibel sind.
+Ziel ist es, seltene Falsch-Positive-Detektionen (geometrisch unplausible Schrauben-Boxen) zu entfernen, ohne den Recall signifikant zu verschlechtern. Die eigentliche Klassifizierung (Schraube vorhanden/fehlend) wird von YOLOv8 übernommen.
 
-## 🛠️ Installation
+Der GNN-Validator prüft ausschließlich die Frage:
 
-Bevor Sie die Skripte ausführen, stellen Sie sicher, dass alle Abhängigkeiten korrekt installiert sind. Führen Sie dazu den folgenden Befehl im `scripts/GNN`-Ordner aus:
+> „Ist diese von YOLO erkannte Schraube (oder Lücke) geometrisch plausibel im lokalen Kontext ihrer Nachbarn?“
 
-```bash
-pip install -r requirements.txt
+Das System basiert auf einem **Graph-Autoencoder**, der auf die normalen, räumlichen Anordnungen von Schrauben trainiert wird.
+
+---
+
+## Architektur & Funktionsweise
+
+Die Pipeline ist in drei Hauptphasen unterteilt: Training, Inferenz und Visualisierung.
+
+**1. Training (Lernen der "normalen" Geometrie):**
+
+`Ground Truth Labels` → `Graph-Erstellung (k-NN)` → `Training des Graph-Autoencoders`
+
+- Aus den Ground-Truth-Labels (nur Positionen, keine Klassen) werden für jedes Bild Graphen erstellt.
+- Jede Bounding Box ist ein **Knoten (Node)** im Graph.
+- Die **Kanten (Edges)** verbinden jeden Knoten mit seinen `k` nächsten Nachbarn (k-NN).
+- Ein Graph-Autoencoder wird trainiert, die Knoten-Features (x, y, w, h) jedes Graphen zu rekonstruieren.
+- Das Modell lernt so, wie eine "typische" lokale Schraubenanordnung aussieht.
+
+**2. Inferenz (Validierung der YOLO-Ergebnisse):**
+
+`YOLO-Prediction` → `Confidence-Filter` → `Graph-Erstellung` → `GNN-Inferenz` → `Anomalie-Prüfung` → `Gefilterte Labels`
+
+- Eine YOLO-Prediction wird geladen (`class, x, y, w, h, conf`).
+- Boxen mit `confidence >= yolo_confidence_threshold` werden **direkt als korrekt übernommen**.
+- Für die restlichen Boxen (`confidence < yolo_confidence_threshold`) wird eine Prüfung durchgeführt:
+  1. Ein Graph wird aus **allen** Boxen des Bildes erstellt, um den vollen Kontext zu nutzen.
+  2. Der trainierte Autoencoder versucht, die Features aller Knoten zu rekonstruieren.
+  3. Für jede niedrig-konfidente Box wird der **Rekonstruktionsfehler** berechnet.
+  4. Ist der Fehler größer als der `anomaly_threshold`, wird die Box als Anomalie (False Positive) markiert und **verworfen**.
+- Das Ergebnis ist eine bereinigte Label-Datei mit höherer Präzision.
+
+---
+
+## Projektstruktur
+
 ```
-
-## � Ordnerstruktur
-
-Die Skripte erwarten die folgende Projektstruktur. Alle Pfade in den Skripten sind relativ zum Hauptverzeichnis des Projekts (`bolt_detection`).
-
-```
-bolt_detection/
-├── dataset/
-│   ├── labels/
-│   │   ├── train/      # (Input) Saubere YOLO-Labels für das GNN-Training
-│   │   └── val/        # Ground-Truth-Labels für die YOLO-Validierung
-│   └── images/
-│       ├── train/
-│       └── val/
-└── scripts/
-    ├── GNN/            # Alle Skripte für die GNN-Pipeline
-    │   ├── outputs
-    │   │   ├── cleaned_labels
-    │   │   └── visualizations
-    │   ├── trained_models
-    │   ├── model.py
-    │   ├── utils.py
-    │   ├── train_gnn.py
-    │   ├── infer_gnn.py
-    │   ├── visualize.py
-    │   └── README.md   # Diese Datei
-    └── YOLO/
-        └── ...         # Deine YOLO-Skripte
-```
-
-## ⚙️ Workflow
-
-Der Prozess ist in 3+1 Schritte unterteilt:
-
-### Schritt 1: YOLO-Inferenz durchführen
-
-Zuerst benötigen wir die Roh-Ergebnisse von YOLO mit einer sehr niedrigen Konfidenzschwelle, um einen maximalen Recall sicherzustellen. Das Skript `infer_model_with_confidence.py` ist dafür ideal.
-
-- **Input**: Bilder (z.B. aus `dataset/images/val`).
-- **Output**: YOLO-Labeldateien (`.txt`) mit 6 Spalten: `class_id x y w h confidence`. Diese müssen im Ordner `scripts/YOLO/infer` liegen.
-
-### Schritt 2: GNN-Modell trainieren
-
-Das GNN wird einmalig auf den "gesunden" Trainingsdaten trainiert, um die normale Schraubenanordnung zu lernen.
-
-- **Input**: Die sauberen Labeldateien aus `dataset/labels/train`.
-- **Output**: Ein trainiertes Modell (`gnn_model.pth`) und eine Konfigurationsdatei (`config.json`) im Ordner `scripts/GNN/trained_models`.
-
-**Befehl (aus dem Ordner `scripts/GNN` ausführen):**
-```bash
-python train_gnn.py --k 5 --epochs 100
-```
-
-### Schritt 3: GNN-Inferenz (Filterung)
-
-Das trainierte GNN wird nun auf die rohen YOLO-Ergebnisse aus Schritt 1 angewendet, um unplausible Bounding Boxes zu entfernen.
-
-    1. Der Ordner mit den rohen YOLO-Labels (`scripts/YOLO/infer`).
-    2. Das trainierte GNN-Modell aus `gnn_trained_models`.
-
-**Befehl (aus dem Ordner `scripts/GNN` ausführen):**
-```bash
-python infer_gnn.py --threshold 0.5
-```
-
-### Schritt 4: Ergebnisse visualisieren (Optional)
-
-Um die Ergebnisse zu analysieren und zu verstehen, was das GNN tut, kann das Visualisierungsskript verwendet werden. Es erzeugt ein Vergleichsbild (YOLO vs. YOLO+GNN).
-
-- **Input**:
-    1. Ein Originalbild.
-    2. Die zugehörige **rohe** Labeldatei aus Schritt 1.
-    3. Das trainierte GNN-Modell.
-- **Output**: Ein Bild in `gnn_outputs/visualizations`, das die Filterung zeigt.
-
-**Befehl (aus dem Ordner `scripts/GNN` ausführen):**
-```bash
-python visualize.py --image_path ../../dataset/images/val/bild_name.jpg --label_path PFAD_ZUR_ROHEN_LABEL_DATEI.txt --threshold 0.5 --show_edges
+scripts/
+└─ GNN/
+   ├─ config.yaml                # Alle Konfigurationen und Pfade
+   ├─ requirements.txt
+   ├─ utils.py                   # Hilfsfunktionen (Label-Handling, Graph-Erstellung)
+   ├─ dataset_builder.py         # Erstellt die Trainings-Graphen aus Ground Truth Labels
+   ├─ train_gnn.py               # Trainiert das Graph-Autoencoder-Modell
+   ├─ inference_gnn.py           # Validiert YOLO-Predictions und entfernt Anomalien
+   ├─ visualize_results.py       # Visualisiert die gefilterten Ergebnisse
+   └─ outputs/
+       ├─ model.pt                 # Das trainierte Modell
+       ├─ datasets/                # Gespeicherte Graphen für das Training
+       └─ validated_labels/        # Die bereinigten Label-Dateien
 ```
 
 ---
 
-## 📜 Skript-Details
+## Ausführung
 
-### `train_gnn.py`
-- **Zweck**: Trainiert das GNN-Modell.
-- **Logik**:
-    1. Liest alle `.txt`-Dateien aus dem `--data_path`.
-    2. Baut für jede Datei einen Graphen, wobei jede Bounding Box ein Knoten ist.
-    3. Trainiert das Modell darauf, alle Knoten als "plausibel" (Label 1.0) zu klassifizieren.
-- **Wichtige Parameter**:
-    - `--data_path`: Pfad zu den Trainingslabels (Standard: `../../dataset/labels/train`).
-    - `--model_dir`: Speicherort für das trainierte Modell (Standard: `../../gnn_trained_models`).
-    - `--k`: Anzahl der Nachbarn, die für die Graph-Konstruktion berücksichtigt werden. Ein entscheidender Hyperparameter.
-    - `--epochs`: Anzahl der Trainingsdurchläufe.
+### Schritt 1: Trainingsdatensatz erstellen
+Dieses Skript liest die Ground-Truth-Labels und erstellt die Graphen für das Training.
+```bash
+python dataset_builder.py
+```
 
-### `infer_gnn.py`
-- **Zweck**: Wendet das trainierte GNN an, um YOLO-Ergebnisse zu filtern.
-- **Logik**:
-    1. Lädt das trainierte Modell aus `--model_dir`.
-    2. Verarbeitet jede `.txt`-Datei aus dem `--input_dir`.
-    3. Erstellt pro Datei einen Graphen und lässt das GNN für jeden Knoten (jede Box) eine Plausibilitäts-Wahrscheinlichkeit berechnen.
-    4. Behält nur die Boxen, deren Wahrscheinlichkeit über dem `--threshold` liegt.
-    5. Speichert die gefilterten Boxen im `--output_dir`.
-- **Wichtige Parameter**:
-    - `--input_dir`: **(Erforderlich)** Pfad zu den rohen YOLO-Labels, die gefiltert werden sollen.
-    - `--output_dir`: Speicherort für die bereinigten Labels (Standard: `../../gnn_outputs/cleaned_labels`).
-    - `--model_dir`: Pfad zum trainierten Modell (Standard: `../../gnn_trained_models`).
-    - `--threshold`: Der Schwellenwert (0-1) für die Plausibilität. Boxen unter diesem Wert werden als False Positives entfernt. Dies ist der wichtigste Parameter zur Steuerung der Filterstärke.
+### Schritt 2: GNN-Modell trainieren
+Trainiert den Graph-Autoencoder mit den zuvor erstellten Graphen.
+```bash
+python train_gnn.py
+```
 
-### `visualize.py`
-- **Zweck**: Erstellt eine visuelle Gegenüberstellung der Ergebnisse vor und nach der GNN-Filterung.
-- **Logik**:
-    1. Lädt ein Bild und die zugehörige rohe Labeldatei.
-    2. Berechnet die GNN-Plausibilitäten für alle Boxen.
-    3. Erzeugt ein Bild, das links alle rohen Boxen und rechts die farblich markierten (grün=plausibel, rot=unplausibel) Boxen zeigt.
-- **Wichtige Parameter**:
-    - `--image_path`: **(Erforderlich)** Pfad zum Originalbild.
-    - `--label_path`: **(Erforderlich)** Pfad zur rohen YOLO-Labeldatei.
-    - `--output_dir`: Speicherort für das Ausgabebild (Standard: `../../gnn_outputs/visualizations`).
-    - `--threshold`: Schwellenwert für die Farbkodierung (grün/rot).
-    - `--show_edges`: Wenn gesetzt, werden die Kanten des Graphen im Bild eingezeichnet.
+### Schritt 3: YOLO-Ergebnisse validieren
+Lädt die YOLO-Predictions, wendet die GNN-Validierung an und speichert die bereinigten Labels.
+```bash
+python inference_gnn.py
+```
 
-### `model.py`
-- **Zweck**: Definiert die Architektur des GNN (`AnomalyGNN`).
-- **Struktur**: Besteht aus zwei `SAGEConv`-Layern und einem MLP-Klassifikator. Nimmt die Node-Features entgegen und gibt pro Node einen Logit-Wert für die Plausibilität aus.
+### Schritt 4 (Optional): Ergebnisse visualisieren
+Zeigt ein Bild mit den ursprünglichen und den gefilterten Bounding Boxes an.
+```bash
+python visualize_results.py --image_id <ID_des_Bildes>
+```
 
-### `utils.py`
-- **Zweck**: Enthält Hilfsfunktionen, die von mehreren Skripten verwendet werden.
-- **Funktionen**:
-    - `parse_yolo_labels()`: Liest und parst `.txt`-Dateien im YOLO-Format.
-    - `build_graph_from_boxes()`: Konstruiert aus einer Liste von Bounding Boxes ein `torch_geometric.data.Data`-Objekt (einen Graphen) mittels k-Nearest-Neighbors.
+---
+
+## Wichtige Parameter in `config.yaml`
+
+- `gnn.k_neighbors`: Anzahl der Nachbarn für die k-NN-Grapherstellung. Ein höherer Wert erfasst einen größeren lokalen Kontext. (Empfehlung: 5-10)
+- `inference.yolo_confidence_threshold`: YOLO-Detektionen über diesem Schwellenwert werden als korrekt angenommen und nicht geprüft. (Empfehlung: 0.1 - 0.5)
+- `inference.anomaly_threshold`: Schwellenwert für den Rekonstruktionsfehler. Boxen mit einem höheren Fehler werden als Anomalie entfernt. (Muss experimentell ermittelt werden, z.B. 0.01 - 0.05)

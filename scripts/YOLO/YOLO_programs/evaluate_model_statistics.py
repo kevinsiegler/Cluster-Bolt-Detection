@@ -13,7 +13,7 @@ import streamlit as st
 def load_labels(label_dir):
     """
     Lädt YOLO-Labels aus einem Verzeichnis.
-    Jede TXT-Datei enthält Zeilen im Format: [class x_center y_center width height]
+    Jede TXT-Datei enthält Zeilen im Format: [class x_center y_center width height (conf)]
     Rückgabe: dict mit Bildname als key und np.array mit Boxen als value
     """
     labels = {}
@@ -23,8 +23,10 @@ def load_labels(label_dir):
             data = []
             for line in f.readlines():
                 parts = list(map(float, line.strip().split()))
-                if len(parts) == 5:
-                    data.append(parts)
+                # Akzeptiere 5 (ohne Conf) oder 6 (mit Conf) Werte
+                if len(parts) >= 5:
+                    # Wir speichern nur die ersten 5 Werte [class, x, y, w, h] für die Auswertung
+                    data.append(parts[:5])
             labels[name] = np.array(data)
     return labels
 
@@ -75,22 +77,24 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 
     for img_name, gt_boxes in gt_labels.items():
         pred_boxes = pred_labels.get(img_name, np.array([]))
-        matched_pred = set()
+        matched_pred_indices = set()
 
         for gt_box in gt_boxes:
             gt_class = int(gt_box[0])
             best_iou = 0
-            best_pred = None
+            best_pred_idx = -1
 
             for i, pred_box in enumerate(pred_boxes):
+                if i in matched_pred_indices:
+                    continue
                 iou = bbox_iou(gt_box[1:], pred_box[1:])
                 if iou > best_iou:
                     best_iou = iou
-                    best_pred = (i, pred_box)
+                    best_pred_idx = i
 
-            if best_iou >= iou_threshold and best_pred is not None:
-                pred_class = int(best_pred[1][0])
-                matched_pred.add(best_pred[0])
+            if best_iou >= iou_threshold and best_pred_idx != -1:
+                pred_class = int(pred_boxes[best_pred_idx][0])
+                matched_pred_indices.add(best_pred_idx)
                 correct = gt_class == pred_class
                 stats.append({
                     "image": img_name,
@@ -110,7 +114,7 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 
         # Vorhersagen ohne zugeordnetes GT
         for j, pred_box in enumerate(pred_boxes):
-            if j not in matched_pred:
+            if j not in matched_pred_indices:
                 stats.append({
                     "image": img_name,
                     "iou": 0,
@@ -127,7 +131,7 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 # ABSOLUTE PFADE (FIXED LOCATIONS)
 # ============================================================
 
-EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\infer\evaluations_30_n"
+EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\infer\evaluations_w_confidence_txt_data"
 
 # Ground Truth (immer gleich)
 DEFAULT_GT = r"C:\Users\Kevin\Clustererkennung\bolt_detection\dataset\labels\val"
@@ -162,7 +166,7 @@ tabs = st.tabs(available_evals)
 
 for i, eval_name in enumerate(available_evals):
     with tabs[i]:
-        pred_dir = os.path.join(EVAL_BASE, eval_name, "labels")
+        pred_dir = os.path.join(EVAL_BASE, eval_name)
 
         st.subheader(f"📁 Evaluierung: `{eval_name}`")
         st.markdown(f"**Pfad:** `{pred_dir}`")
@@ -191,7 +195,7 @@ for i, eval_name in enumerate(available_evals):
 
             recall = len(tp_correct) / (len(tp_correct) + len(wrong_class) + len(missed)) if len(gt_nonempty) > 0 else 0
             precision = len(tp_correct) / (
-                len(tp_correct) + len(wrong_class) + len(false_positives) + len(missed)
+                len(tp_correct) + len(wrong_class) + len(false_positives)
             ) if (len(gt_nonempty) + len(pred_nonempty)) > 0 else 0
             f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
             mean_iou = df["iou"].mean()
@@ -234,7 +238,7 @@ for i, eval_name in enumerate(available_evals):
 
                 recall_c = len(tp_c) / (len(tp_c) + len(wrong_c) + len(missed_c)) if len(gt_class_df) > 0 else 0
                 precision_c = len(tp_c) / (
-                    len(tp_c) + len(fp_c) + len(wrong_c) + len(missed_c)
+                    len(tp_c) + len(fp_c) + len(wrong_c)
                 ) if (len(gt_class_df) + len(pred_class_df)) > 0 else 0
                 f1_c = 2 * (precision_c * recall_c) / (precision_c + recall_c + 1e-8)
 

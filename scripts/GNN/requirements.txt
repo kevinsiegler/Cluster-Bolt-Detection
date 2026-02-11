@@ -1,6 +1,9 @@
---find-links https://data.pyg.org/whl/torch-2.8.0+cpu.html
 torch
+torchvision
 torch_geometric
-torch-cluster
-numpy
 scikit-learn
+opencv-python
+PyYAML
+matplotlib
+tqdm
+Pillow

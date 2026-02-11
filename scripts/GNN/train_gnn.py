@@ -1,111 +1,120 @@
-import os
-import glob
-import json
 import torch
-from torch.utils.data import DataLoader
-from torch_geometric.data import Batch
-import argparse
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+from torch_geometric.loader import DataLoader
+import yaml
+import os
+from tqdm import tqdm
 
-from model import AnomalyGNN
-from utils import parse_yolo_labels, build_graph_from_boxes
+# --- Config laden ---
+with open("config.yaml", "r") as f:
+    cfg = yaml.safe_load(f)
 
-def train(config):
-    """Haupt-Trainingsfunktion."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Verwende Gerät: {device}")
+# --- GNN Autoencoder Modell Definition ---
+# Diese Klasse wird auch von inference_gnn.py importiert
+class GNN(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        
+        if num_layers < 2:
+            raise ValueError("Number of layers must be at least 2 for an autoencoder.")
 
-    # 1. Daten laden und Graphen erstellen
-    label_files = glob.glob(os.path.join(config['data_path'], '*.txt'))
-    graphs = []
-    for file in label_files:
-        # Trainingsdaten haben keine Konfidenzwerte
-        boxes_np = parse_yolo_labels(file, is_inference=False)
-        if boxes_np.size > 0:
-            boxes_tensor = torch.from_numpy(boxes_np).float()
-            graph = build_graph_from_boxes(boxes_tensor, k=config['k'], is_inference=False)
-            graphs.append(graph)
-    
-    print(f"{len(graphs)} Graphen aus den Trainingsdaten erstellt.")
-    
-    # DEBUG: Überprüfung, ob Daten korrekt geladen wurden
-    if len(graphs) > 0:
-        print(f"DEBUG Check: Erster Graph hat {graphs[0].num_nodes} Knoten.")
-        print(f"DEBUG Check: Feature-Shape des ersten Graphen: {graphs[0].x.shape} (Erwartet: [N, 4])")
+        # Encoder-Teil
+        self.layers.append(GCNConv(in_channels, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.layers.append(GCNConv(hidden_channels, hidden_channels))
+        
+        # Decoder-Teil (letzte Schicht)
+        self.layers.append(GCNConv(hidden_channels, out_channels))
 
-    # PyG DataLoader für Batching von Graphen
-    def collate_fn(data_list):
-        return Batch.from_data_list(data_list)
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        for i, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            # Keine Aktivierungsfunktion auf der letzten Schicht
+            if i < len(self.layers) - 1:
+                x = F.relu(x)
+        return x
 
-    train_loader = DataLoader(graphs, batch_size=config['batch_size'], shuffle=True, collate_fn=collate_fn)
+def main():
+    # --- Device ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    # 2. Modell, Loss und Optimizer initialisieren
-    # Im Training haben wir 4 Node-Features: [x, y, w, h]
-    model = AnomalyGNN(in_channels=4, hidden_channels=64).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-    # Da wir nur "gesunde" Beispiele haben, wollen wir, dass das Modell für jeden Knoten eine hohe Plausibilität (nahe 1) ausgibt.
-    criterion = torch.nn.BCEWithLogitsLoss()
+    # --- Datensätze laden ---
+    dataset_dir = os.path.join(cfg["paths"]["output_root"], "datasets")
+    train_graphs_path = os.path.join(dataset_dir, "train_graphs.pt")
+    val_graphs_path = os.path.join(dataset_dir, "val_graphs.pt")
 
-    # 3. Trainings-Loop
-    model.train()
-    for epoch in range(config['epochs']):
-        total_loss = 0
-        for batch in train_loader:
-            batch = batch.to(device)
+    if not os.path.exists(train_graphs_path) or not os.path.exists(val_graphs_path):
+        print(f"❌ Error: Graph dataset files not found in '{dataset_dir}'")
+        print("Please run dataset_builder.py first.")
+        return
+
+    train_graphs = torch.load(train_graphs_path, weights_only=False)
+    val_graphs = torch.load(val_graphs_path, weights_only=False)
+    print(f"✅ Loaded {len(train_graphs)} training graphs and {len(val_graphs)} validation graphs.")
+
+    train_loader = DataLoader(train_graphs, batch_size=cfg["training"]["batch_size"], shuffle=True)
+    val_loader = DataLoader(val_graphs, batch_size=cfg["training"]["batch_size"])
+
+    # --- Modell initialisieren ---
+    model = GNN(
+        in_channels=cfg["gnn"]["input_features"],
+        hidden_channels=cfg["gnn"]["hidden_dim"],
+        out_channels=cfg["gnn"]["output_dim"],
+        num_layers=cfg["gnn"]["num_layers"]
+    ).to(device)
+    print("\n--- Model Architecture ---\n", model, "\n--------------------------\n")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg["training"]["lr"])
+    criterion = nn.MSELoss()
+
+    # --- Trainingsloop ---
+    best_val_loss = float('inf')
+    print("--- Starting Training ---")
+    for epoch in range(cfg["training"]["epochs"]):
+        model.train()
+        total_train_loss = 0
+        for data in tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg['training']['epochs']} [Train]"):
+            data = data.to(device)
             optimizer.zero_grad()
-            
-            # 1. Positive Samples (Echte Daten -> Label 1)
-            logits_pos = model(batch)
-            loss_pos = criterion(logits_pos, torch.ones_like(logits_pos))
-            
-            # 2. Negative Samples (Simulierte Fehler -> Label 0)
-            # Wir erzeugen künstliche "falsche" Daten, damit das Modell lernt, was NICHT passt.
-            # Sonst lernt es einfach nur, immer "1" auszugeben (Loss = 0).
-            batch_neg = batch.clone()
-            # Rauschen hinzufügen (z.B. 10% der Bildgröße als Standardabweichung)
-            noise = torch.randn_like(batch_neg.x) * 0.1
-            batch_neg.x = batch_neg.x + noise
-            
-            logits_neg = model(batch_neg)
-            loss_neg = criterion(logits_neg, torch.zeros_like(logits_neg))
-            
-            loss = loss_pos + loss_neg
+            out = model(data)
+            loss = criterion(out, data.x)
             loss.backward()
             optimizer.step()
-            
-            total_loss += loss.item() * batch.num_graphs
+            total_train_loss += loss.item()
         
-        avg_loss = total_loss / len(train_loader.dataset)
-        print(f"Epoch {epoch+1}/{config['epochs']}, Loss: {avg_loss:.6f}")
+        avg_train_loss = total_train_loss / len(train_loader)
 
-    # 4. Modell und Konfiguration speichern
-    os.makedirs(config['model_dir'], exist_ok=True)
-    model_path = os.path.join(config['model_dir'], 'gnn_model.pth')
-    config_path = os.path.join(config['model_dir'], 'config.json')
+        # --- Validierungsloop ---
+        model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for data in tqdm(val_loader, desc=f"Epoch {epoch+1}/{cfg['training']['epochs']} [Val]  "):
+                data = data.to(device)
+                out = model(data)
+                loss = criterion(out, data.x)
+                total_val_loss += loss.item()
+        
+        avg_val_loss = total_val_loss / len(val_loader)
 
-    torch.save(model.state_dict(), model_path)
-    # Speichere die Konfiguration, die für die Inferenz benötigt wird
-    inference_config = {
-        'k': config['k'],
-        'in_channels_inference': 4, # Inferenz nutzt nur [x, y, w, h], um zum Training zu passen
-        'hidden_channels': 64
-    }
-    with open(config_path, 'w') as f:
-        json.dump(inference_config, f, indent=4)
+        print(f"Epoch {epoch+1}/{cfg['training']['epochs']} -> Avg Train Loss: {avg_train_loss:.6f}, Avg Val Loss: {avg_val_loss:.6f}")
 
-    print(f"Modell gespeichert unter: {model_path}")
-    print(f"Konfiguration gespeichert unter: {config_path}")
+        # --- Modell speichern ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            # Erstelle einen dedizierten Ordner für diesen Trainingslauf
+            training_run_name = cfg["training"]["run_name"]
+            model_dir = os.path.join(cfg["paths"]["output_root"], "trained_models", training_run_name)
+            os.makedirs(model_dir, exist_ok=True)
+            model_save_path = os.path.join(model_dir, "model.pt")
+            torch.save(model.state_dict(), model_save_path)
+            print(f"✨ New best model for run '{training_run_name}' saved to '{model_save_path}' (Val Loss: {avg_val_loss:.6f})")
 
+    print("\n🎉 Training complete!")
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="GNN-Training für Bounding-Box-Anomalieerkennung")
-    parser.add_argument('--data_path', type=str, default=r'C:\Users\Kevin\Clustererkennung\bolt_detection\dataset\labels\train', help="Pfad zum Ordner mit den YOLO-Trainingslabels.")
-    parser.add_argument('--model_dir', type=str, default='trained_models', help="Verzeichnis zum Speichern des Modells (im GNN-Ordner). Standard: trained_models")
-    parser.add_argument('--k', type=int, default=4, help="Anzahl der Nachbarn für den k-NN-Graphen.")
-    parser.add_argument('--epochs', type=int, default=50, help="Anzahl der Trainingsepochen.")
-    parser.add_argument('--batch_size', type=int, default=16, help="Batch-Größe für das Training.")
-    parser.add_argument('--learning_rate', type=float, default=0.001, help="Lernrate für den Optimizer.")
-    
-    args = parser.parse_args()
-    
-    config = vars(args)
-    train(config)
+if __name__ == "__main__":
+    main()

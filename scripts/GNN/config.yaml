@@ -1,0 +1,36 @@
+# config.yaml
+paths:
+  train_images: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/images/train"
+  val_images: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/images/val"
+  train_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/train"
+  val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
+  yolo_inference: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/infer/evaluations_w_confidence_txt_data/infer_train_30_epoch_conf(0.01)"
+  output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/GNN/outputs"
+
+gnn:
+  input_features: 4  # x, y, w, h
+  hidden_dim: 32
+  output_dim: 4      # Autoencoder sollte Eingabe rekonstruieren
+  num_layers: 3
+  k_neighbors: 8     # Für k-NN Graph-Erstellung
+
+training:
+  run_name: "training_1" # Name für diese Trainingssitzung. Das Modell wird in einem Ordner mit diesem Namen gespeichert.
+  epochs: 100
+  batch_size: 1
+  lr: 0.001
+
+inference:
+  training_run_to_use: "training_1" # Welches trainierte Modell soll für die Inferenz verwendet werden (Name des Trainingslauf-Ordners).
+  run_name: "inference_w_anomaly_0.001" # Name für diese Validierungssitzung. Ausgaben werden in einem Ordner mit diesem Namen gespeichert.
+  yolo_confidence_threshold: 0.1 # Boxen darüber werden übernommen, darunter geprüft.
+  anomaly_threshold: 0.001        # Rekonstruktionsfehler-Schwelle für Anomalien.
+  log_anomaly_errors: true # Soll eine CSV-Datei mit den Rekonstruktionsfehlern der geprüften Boxen erstellt werden? (true/false)
+
+evaluation:
+  iou_threshold: 0.5 # IoU-Schwellenwert, um zu bestimmen, ob eine vorhergesagte Box mit einer Ground-Truth-Box übereinstimmt.
+
+visualization:
+  line_thickness: 2
+  removed_box_color: [0, 0, 255] # Rot in BGR
+  kept_box_color: [0, 255, 0]    # Grün in BGR
