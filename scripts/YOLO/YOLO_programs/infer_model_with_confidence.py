@@ -1,15 +1,16 @@
 from ultralytics import YOLO
 import os
 
-TRAIN_NAME = "train_30_epoch"
-MODEL_PATH = f"runs/detect/training/{TRAIN_NAME}/weights/best.pt"
-IMG = "../dataset/images/val"
+TRAIN_NAME = "train_30_epoch_with_parameter_s"
+TRAINING_DIR = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\training"
+MODEL_PATH = os.path.join(TRAINING_DIR, TRAIN_NAME, "weights", "best.pt")
+IMG = r"C:\Users\Kevin\Clustererkennung\bolt_detection\dataset\images\val"
 
 # Um exakt die gleichen Labels wie infer_model.py zu erhalten, muss die Confidence übereinstimmen.
-CONF = 0.4
+CONF = 0.05
 
 OUTPUT_NAME = f"infer_{TRAIN_NAME}_conf({CONF})"
-EVAL_BASE = "runs/detect/evaluations_w_confidence_txt_data"
+EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\infer\evaluations_w_confidence_txt_data"
 os.makedirs(EVAL_BASE, exist_ok=True)
 OUTPUT_DIR = os.path.join(EVAL_BASE, OUTPUT_NAME)
 os.makedirs(OUTPUT_DIR, exist_ok=True)

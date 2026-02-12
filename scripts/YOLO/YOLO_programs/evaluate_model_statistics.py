@@ -131,11 +131,15 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 # ABSOLUTE PFADE (FIXED LOCATIONS)
 # ============================================================
 
-EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\infer\evaluations_w_confidence_txt_data"
+EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\GNN\outputs\validated_labels"
 
 # Ground Truth (immer gleich)
 DEFAULT_GT = r"C:\Users\Kevin\Clustererkennung\bolt_detection\dataset\labels\val"
 
+
+# ============================================================
+# DASHBOARD
+# ============================================================
 
 # ============================================================
 # DASHBOARD
@@ -183,39 +187,58 @@ for i, eval_name in enumerate(available_evals):
                 st.success("✅ Auswertung abgeschlossen!")
 
             # ============================================================
-            # METRIKEN
+            # METRIKEN (globale Berechnung)
             # ============================================================
-            gt_nonempty = df[df["gt_class"].notna()]
-            pred_nonempty = df[df["pred_class"].notna()]
+            tp_total = 0
+            wrong_total = 0
+            missed_total = 0
+            fp_total = 0
 
-            tp_correct = df[(df["gt_class"].notna()) & (df["pred_class"].notna()) & (df["match"])]
-            wrong_class = df[(df["gt_class"].notna()) & (df["pred_class"].notna()) & (~df["match"])]
-            missed = df[(df["gt_class"].notna()) & (df["pred_class"].isna())]
-            false_positives = df[(df["gt_class"].isna()) & (df["pred_class"].notna())]
+            for class_id in sorted(df["gt_class"].dropna().unique()):
 
-            recall = len(tp_correct) / (len(tp_correct) + len(wrong_class) + len(missed)) if len(gt_nonempty) > 0 else 0
-            precision = len(tp_correct) / (
-                len(tp_correct) + len(wrong_class) + len(false_positives)
-            ) if (len(gt_nonempty) + len(pred_nonempty)) > 0 else 0
+                gt_class_df = df[df["gt_class"] == class_id]
+                pred_class_df = df[df["pred_class"] == class_id]
+
+                # TP
+                tp_c = gt_class_df[gt_class_df["match"]]
+
+                # Falsch klassifiziert
+                wrong_c = gt_class_df[
+                    (gt_class_df["pred_class"].notna()) &
+                    (~gt_class_df["match"])
+                ]
+
+                # Nicht erkannt
+                missed_c = gt_class_df[
+                    gt_class_df["pred_class"].isna()
+                ]
+
+                # Überflüssige Boxen
+                fp_c = pred_class_df[
+                    (pred_class_df["gt_class"].isna()) |
+                    (~pred_class_df["match"])
+                ]
+
+                tp_total += len(tp_c)
+                wrong_total += len(wrong_c)
+                missed_total += len(missed_c)
+                fp_total += len(fp_c)
+
+            # --- Berechnungen intern immer genau ---
+            precision = tp_total / (tp_total + wrong_total + fp_total) if (tp_total + wrong_total + fp_total) > 0 else 0
+            recall = tp_total / (tp_total + wrong_total + missed_total) if (tp_total + wrong_total + missed_total) > 0 else 0
             f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
             mean_iou = df["iou"].mean()
 
-            # Gesamtmetriken mit Erklärungen
+            # --- Ausgabe gerundet auf 2 Nachkommastellen ---
             with st.expander("📘 Gesamtmetriken & Erklärungen", expanded=True):
                 st.markdown("""
                 ### 📈 **Gesamtmetriken – Verständlich erklärt**
 
-                - 🎯 **Erweiterte Precision (Genauigkeit)**  
-                  Anteil korrekt erkannter Objekte an **allen Boxen (inkl. verfehlter & überflüssiger)**.  
-
-                - ✅ **Erweiterter Recall (Vollständigkeit)**  
-                  Anteil korrekt erkannter Ground Truths.  
-
-                - ⚖️ **F1-Score:**  
-                  Harmonisches Mittel von Precision und Recall – kombiniert Zuverlässigkeit & Vollständigkeit.
-
-                - 📏 **Mittlere IoU:**  
-                  Durchschnittliche Überlappung zwischen Ground Truth & Prediction.
+                - 🎯 **Precision**: Anteil korrekt erkannter Objekte an allen Boxen  
+                - ✅ **Recall**: Anteil korrekt erkannter Ground Truths  
+                - ⚖️ **F1-Score**: Harmonisches Mittel von Precision & Recall  
+                - 📏 **Mittlere IoU**: Durchschnittliche Überlappung
                 """)
 
                 col1, col2, col3, col4 = st.columns(4)
@@ -224,35 +247,41 @@ for i, eval_name in enumerate(available_evals):
                 col3.metric("⚖️ F1-Score", f"{f1*100:.2f} %")
                 col4.metric("📏 Mittlere IoU", f"{mean_iou*100:.2f} %")
 
+            # ============================================================
             # Klassenweise Analyse
+            # ============================================================
             st.subheader("🔹 Klassenweise Analyse")
 
             for class_id, class_name in [(0, "Bolt (vorhanden)"), (1, "Missing Bolt (fehlend)")]:
-
+                
                 gt_class_df = df[df["gt_class"] == class_id]
+                pred_class_df = df[df["pred_class"] == class_id]
+
                 tp_c = gt_class_df[gt_class_df["match"]]
                 wrong_c = gt_class_df[(gt_class_df["pred_class"].notna()) & (~gt_class_df["match"])]
                 missed_c = gt_class_df[gt_class_df["pred_class"].isna()]
-                pred_class_df = df[df["pred_class"] == class_id]
-                fp_c = pred_class_df[(pred_class_df["gt_class"].isna()) | (~pred_class_df["match"])]
+                false_positive_c = pred_class_df[(pred_class_df["gt_class"].isna()) | (~pred_class_df["match"])]
 
-                recall_c = len(tp_c) / (len(tp_c) + len(wrong_c) + len(missed_c)) if len(gt_class_df) > 0 else 0
-                precision_c = len(tp_c) / (
-                    len(tp_c) + len(fp_c) + len(wrong_c)
-                ) if (len(gt_class_df) + len(pred_class_df)) > 0 else 0
+                tp_val = len(tp_c)
+                wrong_val = len(wrong_c)
+                missed_val = len(missed_c)
+                fp_val = len(false_positive_c)
+
+                # --- Berechnungen intern genau ---
+                precision_c = tp_val / (tp_val + wrong_val + fp_val) if (tp_val + wrong_val + fp_val) > 0 else 0
+                recall_c = tp_val / (tp_val + wrong_val + missed_val) if (tp_val + wrong_val + missed_val) > 0 else 0
                 f1_c = 2 * (precision_c * recall_c) / (precision_c + recall_c + 1e-8)
+                missed_percent = (missed_val / len(gt_class_df) * 100) if len(gt_class_df) > 0 else 0
 
-                missed_count = len(missed_c)
-                missed_percent = (missed_count / len(gt_class_df) * 100) if len(gt_class_df) > 0 else 0
-
+                # --- Anzeige auf 2 Nachkommastellen ---
                 with st.expander(f"📊 Detaillierte Analyse für {class_name}", expanded=False):
                     st.markdown(f"""
                     **🔩 {class_name}**
 
-                    - ✅ **Korrekt erkannt:** {len(tp_c)}  
-                    - ⚠️ **Falsch klassifiziert:** {len(wrong_c)}  
-                    - ❌ **Nicht erkannt:** {missed_count} ({missed_percent:.2f}% der Ground Truths)  
-                    - 📦 **Überflüssige Boxen:** {len(fp_c)}
+                    - ✅ Korrekt erkannt: {tp_val}  
+                    - ⚠️ Falsch klassifiziert: {wrong_val}  
+                    - ❌ Nicht erkannt: {missed_val} ({missed_percent:.2f}% der Ground Truths)  
+                    - 📦 Überflüssige Boxen: {fp_val}
                     """)
 
                     col1, col2, col3, col4 = st.columns(4)
@@ -260,6 +289,8 @@ for i, eval_name in enumerate(available_evals):
                     col2.metric("✅ Recall*", f"{recall_c*100:.2f} %")
                     col3.metric("⚖️ F1-Score", f"{f1_c*100:.2f} %")
                     col4.metric("❌ Nicht erkannt", f"{missed_percent:.2f} %")
+
+
 
             # Konfusionsmatrix
             with st.expander("🧠 Konfusionsmatrix", expanded=False):

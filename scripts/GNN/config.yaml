@@ -4,7 +4,7 @@ paths:
   val_images: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/images/val"
   train_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/train"
   val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
-  yolo_inference: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/infer/evaluations_w_confidence_txt_data/infer_train_30_epoch_conf(0.01)"
+  yolo_inference: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/infer/evaluations_w_confidence_txt_data/infer_train_30_epoch_with_parameter_s_conf(0.05)"
   output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/GNN/outputs"
 
 gnn:
@@ -22,8 +22,8 @@ training:
 
 inference:
   training_run_to_use: "training_1" # Welches trainierte Modell soll für die Inferenz verwendet werden (Name des Trainingslauf-Ordners).
-  run_name: "inference_w_anomaly_0.001" # Name für diese Validierungssitzung. Ausgaben werden in einem Ordner mit diesem Namen gespeichert.
-  yolo_confidence_threshold: 0.1 # Boxen darüber werden übernommen, darunter geprüft.
+  run_name: "inference_w_anomaly_0.001_0.2(YOLO_s_conf_0,05)" # Name für diese Validierungssitzung. Ausgaben werden in einem Ordner mit diesem Namen gespeichert.
+  yolo_confidence_threshold: 0.2 # Boxen darüber werden übernommen, darunter geprüft.
   anomaly_threshold: 0.001        # Rekonstruktionsfehler-Schwelle für Anomalien.
   log_anomaly_errors: true # Soll eine CSV-Datei mit den Rekonstruktionsfehlern der geprüften Boxen erstellt werden? (true/false)
 

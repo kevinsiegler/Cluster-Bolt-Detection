@@ -35,24 +35,20 @@ def box_iou_xywh(box1, box2):
 
     return intersection_area / union_area
 
-def calculate_metrics(gt_labels, pred_labels, iou_threshold):
-    """
-    Berechnet True Positives, False Positives und False Negatives
-    nach der Logik des Dashboards (Spatial Matching first).
-    """
+def calculate_metrics_per_class(gt_labels, pred_labels, iou_threshold):
     gt_boxes = gt_labels[:, 1:5]
     pred_boxes = pred_labels[:, 1:5]
-    gt_classes = gt_labels[:, 0]
-    pred_classes = pred_labels[:, 0]
+    gt_classes = gt_labels[:, 0].astype(int)
+    pred_classes = pred_labels[:, 0].astype(int)
 
-    # Zähler analog zum Dashboard
-    tp_correct = 0      # Match + Klasse korrekt
-    wrong_class = 0     # Match + Klasse falsch
-    missed = 0          # Kein Match für GT
-    
+    stats = {
+        0: {"tp": 0, "wrong": 0, "missed": 0, "fp": 0},
+        1: {"tp": 0, "wrong": 0, "missed": 0, "fp": 0}
+    }
+
     matched_pred_indices = set()
 
-    # 1. Iteriere über GTs und suche besten Match (Greedy)
+    # --- 1. GT durchgehen ---
     for i, gt_box in enumerate(gt_boxes):
         gt_class = gt_classes[i]
         best_iou = 0
@@ -61,52 +57,116 @@ def calculate_metrics(gt_labels, pred_labels, iou_threshold):
         for j, pred_box in enumerate(pred_boxes):
             if j in matched_pred_indices:
                 continue
-            
-            # IoU berechnen (Reihenfolge der Argumente beachten, hier aber symmetrisch)
+
             iou = box_iou_xywh(gt_box, pred_box)
             if iou > best_iou:
                 best_iou = iou
                 best_pred_idx = j
-        
+
         if best_iou >= iou_threshold and best_pred_idx != -1:
             matched_pred_indices.add(best_pred_idx)
             pred_class = pred_classes[best_pred_idx]
-            
+
             if gt_class == pred_class:
-                tp_correct += 1
+                stats[gt_class]["tp"] += 1
             else:
-                wrong_class += 1
+                stats[gt_class]["wrong"] += 1
+                stats[pred_class]["fp"] += 1
         else:
-            missed += 1
-            
-    # 2. Übrige Predictions sind False Positives
-    false_positives = len(pred_boxes) - len(matched_pred_indices)
-    
-    # Mapping auf Standard-Metriken:
-    # Precision = tp_correct / (tp_correct + wrong_class + false_positives)
-    # Recall    = tp_correct / (tp_correct + wrong_class + missed)
-    
-    tp = tp_correct
-    fp = wrong_class + false_positives
-    fn = wrong_class + missed
+            stats[gt_class]["missed"] += 1
 
-    return tp, fp, fn
+    # --- 2. Übrige Predictions = Überflüssige Boxen ---
+    for j in range(len(pred_boxes)):
+        if j not in matched_pred_indices:
+            pred_class = pred_classes[j]
+            stats[pred_class]["fp"] += 1
 
-def print_report(name, tp, fp, fn):
-    """Druckt einen formatierten Bericht."""
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    return stats
+
+
+
+def compute_metrics(stats):
+    tp = stats["tp"]
+    wrong = stats["wrong"]
+    missed = stats["missed"]
+    fp = stats["fp"]
+
+    precision = tp / (tp + wrong + fp) if (tp + wrong + fp) > 0 else 0
+    recall = tp / (tp + wrong + missed) if (tp + wrong + missed) > 0 else 0
     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    
-    print(f"\n--- {name} vs. Ground Truth ---")
-    print(f"  True Positives (TP):  {tp}")
-    print(f"  False Positives (FP): {fp}")
-    print(f"  False Negatives (FN): {fn}")
-    print(f"  ---------------------------------")
-    print(f"  Precision: {precision:.4f}")
-    print(f"  Recall:    {recall:.4f}")
-    print(f"  F1-Score:  {f1:.4f}")
-    return precision, recall, f1
+
+    return {
+        "TP": tp,
+        "Wrong": wrong,
+        "Missed": missed,
+        "FP": fp,
+        "Precision": precision,
+        "Recall": recall,
+        "F1": f1
+    }
+
+# 2️⃣ print_table
+def print_table(title, yolo_stats, gnn_stats, log_func=print):
+    """
+    Zeigt Metriken im Tabellenformat, alle Prozentwerte 0–100.
+    Berechnet F1 direkt aus globalen Summen.
+    """
+    log_func(f"\n\n===== {title} =====")
+
+    def to_metrics(stats, is_global=False):
+        TP = stats["tp"]
+        Wrong = stats["wrong"]
+        Missed = stats["missed"]
+        FP = stats["fp"]
+
+        if is_global:
+            # Dashboard-Logik für F1: direkt aus den Summen
+            Precision = TP / (TP + Wrong + FP) if (TP + Wrong + FP) > 0 else 0
+            Recall = TP / (TP + Wrong + Missed) if (TP + Wrong + Missed) > 0 else 0
+            F1 = 2 * Precision * Recall / (Precision + Recall) if (Precision + Recall) > 0 else 0
+        else:
+            # Klassische Berechnung identisch
+            Precision = TP / (TP + Wrong + FP) if (TP + Wrong + FP) > 0 else 0
+            Recall = TP / (TP + Wrong + Missed) if (TP + Wrong + Missed) > 0 else 0
+            F1 = 2 * Precision * Recall / (Precision + Recall) if (Precision + Recall) > 0 else 0
+
+        return {
+            "TP": TP,
+            "Wrong": Wrong,
+            "Missed": Missed,
+            "FP": FP,
+            "Precision": Precision*100,
+            "Recall": Recall*100,
+            "F1": F1*100
+        }
+
+    # Global-Tabelle bekommt is_global=True
+    is_global = (title == "GLOBAL")
+    yolo_metrics = to_metrics(yolo_stats, is_global=is_global)
+    gnn_metrics = to_metrics(gnn_stats, is_global=is_global)
+
+    # Tabellenheader
+    header = f"{'Metric':<12} | {'Raw YOLO':>12} | {'GNN':>12} | {'Δ (GNN-YOLO)':>14}"
+    log_func(header)
+    log_func("-" * len(header))
+
+    # Zahlen
+    for key in ["TP", "Wrong", "Missed", "FP"]:
+        y = yolo_metrics[key]
+        g = gnn_metrics[key]
+        diff = g - y
+        log_func(f"{key:<12} | {y:12d} | {g:12d} | {diff:14d}")
+
+    # Prozentwerte
+    for key in ["Precision", "Recall", "F1"]:
+        y = yolo_metrics[key]
+        g = gnn_metrics[key]
+        diff = g - y
+        log_func(f"{key:<12} | {y:12.2f} % | {g:12.2f} % | {diff:14.2f} %")
+
+
+
+
 
 def main():
     """
@@ -116,41 +176,87 @@ def main():
     with open("config.yaml", "r") as f:
         cfg = yaml.safe_load(f)
 
-    # --- Pfade definieren ---
     gt_dir = cfg["paths"]["val_labels"]
     yolo_dir = cfg["paths"]["yolo_inference"]
     inference_run_name = cfg["inference"]["run_name"]
     gnn_dir = os.path.join(cfg["paths"]["output_root"], "validated_labels", inference_run_name)
     iou_threshold = cfg["evaluation"]["iou_threshold"]
 
-    print("--- Performance Evaluation ---")
-    print(f"Comparing against Ground Truth validation labels from: {gt_dir}")
-    print(f"Raw YOLO labels from: {yolo_dir}")
-    print(f"GNN validated labels from: {gnn_dir}")
-    print(f"Using IoU threshold: {iou_threshold}")
+    gt_files = {
+        os.path.splitext(f)[0]: os.path.join(gt_dir, f)
+        for f in os.listdir(gt_dir)
+        if f.endswith(".txt")
+    }
 
-    # --- Sammle alle Ground-Truth-Dateien ---
-    gt_files = {os.path.splitext(f)[0]: os.path.join(gt_dir, f) for f in os.listdir(gt_dir) if f.endswith(".txt")}
+    # Aggregation initialisieren
+    yolo_agg = {
+        "total": {"tp":0,"wrong":0,"missed":0,"fp":0},
+        0: {"tp":0,"wrong":0,"missed":0,"fp":0},
+        1: {"tp":0,"wrong":0,"missed":0,"fp":0}
+    }
 
-    # --- Initialisiere Metriken ---
-    yolo_tp_total, yolo_fp_total, yolo_fn_total = 0, 0, 0
-    gnn_tp_total, gnn_fp_total, gnn_fn_total = 0, 0, 0
+    gnn_agg = {
+        "total": {"tp":0,"wrong":0,"missed":0,"fp":0},
+        0: {"tp":0,"wrong":0,"missed":0,"fp":0},
+        1: {"tp":0,"wrong":0,"missed":0,"fp":0}
+    }
+
+    def aggregate(agg, new_stats):
+        for key in [0,1]:   # nur über die Klassen iterieren
+            agg[key]["tp"] += new_stats[key]["tp"]
+            agg[key]["wrong"] += new_stats[key]["wrong"]
+            agg[key]["missed"] += new_stats[key]["missed"]
+            agg[key]["fp"] += new_stats[key]["fp"]
+
 
     for image_id, gt_path in tqdm(gt_files.items(), desc="Evaluating files"):
         yolo_labels = load_yolo_labels(os.path.join(yolo_dir, f"{image_id}.txt"), with_confidence=True)
         gnn_labels = load_yolo_labels(os.path.join(gnn_dir, f"{image_id}.txt"), with_confidence=True)
         gt_labels = load_yolo_labels(gt_path, with_confidence=False)
 
-        tp, fp, fn = calculate_metrics(gt_labels, yolo_labels, iou_threshold); yolo_tp_total+=tp; yolo_fp_total+=fp; yolo_fn_total+=fn
-        tp, fp, fn = calculate_metrics(gt_labels, gnn_labels, iou_threshold); gnn_tp_total+=tp; gnn_fp_total+=fp; gnn_fn_total+=fn
+        yolo_stats = calculate_metrics_per_class(gt_labels, yolo_labels, iou_threshold)
+        gnn_stats = calculate_metrics_per_class(gt_labels, gnn_labels, iou_threshold)
 
-    # --- Ergebnisse ausgeben ---
-    yolo_precision, yolo_recall, _ = print_report("Raw YOLO", yolo_tp_total, yolo_fp_total, yolo_fn_total)
-    gnn_precision, gnn_recall, _ = print_report("GNN Validated", gnn_tp_total, gnn_fp_total, gnn_fn_total)
+        aggregate(yolo_agg, yolo_stats)
+        aggregate(gnn_agg, gnn_stats)
+        # Nach der Aggregation
+        global_yolo_agg = {
+            "tp": yolo_agg[0]["tp"] + yolo_agg[1]["tp"],
+            "wrong": yolo_agg[0]["wrong"] + yolo_agg[1]["wrong"],
+            "missed": yolo_agg[0]["missed"] + yolo_agg[1]["missed"],
+            "fp": yolo_agg[0]["fp"] + yolo_agg[1]["fp"]
+        }
 
-    print("\n--- Summary ---")
-    print(f"GNN validation changed Precision by: {gnn_precision - yolo_precision:+.4f}")
-    print(f"GNN validation changed Recall by:    {gnn_recall - yolo_recall:+.4f}")
+        global_gnn_agg = {
+            "tp": gnn_agg[0]["tp"] + gnn_agg[1]["tp"],
+            "wrong": gnn_agg[0]["wrong"] + gnn_agg[1]["wrong"],
+            "missed": gnn_agg[0]["missed"] + gnn_agg[1]["missed"],
+            "fp": gnn_agg[0]["fp"] + gnn_agg[1]["fp"]
+        }
+
+        global_yolo_metrics = compute_metrics(global_yolo_agg)
+        global_gnn_metrics = compute_metrics(global_gnn_agg)
+
+    # ===== Ausgabe hier innerhalb von main =====
+
+
+    # Output file setup
+    perf_dir = os.path.join(cfg["paths"]["output_root"], "performance_ratings")
+    os.makedirs(perf_dir, exist_ok=True)
+    log_path = os.path.join(perf_dir, f"{inference_run_name}.txt")
+
+    with open(log_path, "w", encoding="utf-8") as f:
+        def log_func(msg):
+            print(msg)
+            f.write(msg + "\n")
+
+        print_table("CLASS 0 – BOLT", yolo_agg[0], gnn_agg[0], log_func=log_func)
+        print_table("CLASS 1 – MISSING BOLT", yolo_agg[1], gnn_agg[1], log_func=log_func)
+        print_table("GLOBAL", global_yolo_agg, global_gnn_agg, log_func=log_func)
+        
+        log_func(f"\nReport saved to: {log_path}")
+
+
 
 if __name__ == "__main__":
     main()

@@ -62,7 +62,7 @@ def calculate_metrics(df, class_id=None):
     
     # Original Metrik-Logik
     rec = tp / (tp + wrong + missed) if (tp + wrong + missed) > 0 else 0
-    prec = tp / (tp + fp + wrong + missed) if (tp + fp + wrong + missed) > 0 else 0
+    prec = tp / (tp + wrong + fp) if (tp + wrong + fp) > 0 else 0
     return prec, rec
 
 # ============================================================
