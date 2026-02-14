@@ -1,102 +1,240 @@
-import cv2
 import os
+import sys
 import yaml
-import argparse
+import cv2
+import torch
+import random
 import numpy as np
-from utils import load_yolo_labels
+from tqdm import tqdm
 
-# --- Config ---
-with open("config.yaml") as f:
-    cfg = yaml.safe_load(f)
+# Ensure local modules can be imported
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# --- Konstanten ---
-MAX_SIZE = 1200  # Maximale Anzeigegröße des Bildes
+from utils import load_yolo_labels, build_knn_graph
+from train_gnn import GNN
 
-def find_image_path(image_id):
-    """Sucht das Bild in den Train- und Val-Ordnern."""
-    for folder in [cfg["paths"]["train_images"], cfg["paths"]["val_images"]]:
+def load_config(config_path="config.yaml"):
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+def get_image_path(image_id, config):
+    """
+    Finds the image path based on ID.
+    Prioritizes the validation folder as per requirements, but checks train as fallback.
+    """
+    search_paths = [
+        config["paths"]["val_images"],
+        config["paths"]["train_images"]
+    ]
+    
+    for folder in search_paths:
+        if not os.path.exists(folder):
+            continue
         for ext in [".jpg", ".png", ".jpeg"]:
             path = os.path.join(folder, image_id + ext)
             if os.path.exists(path):
                 return path
     return None
 
-def draw_boxes(image, labels, color, thickness, label_prefix=""):
-    """Zeichnet Bounding Boxes auf ein Bild."""
-    h, w = image.shape[:2]
-    for label in labels:
-        # YOLO Format: class, xc, yc, bw, bh, [conf]
-        xc, yc, bw, bh = label[1], label[2], label[3], label[4]
-        
-        x1 = int((xc - bw / 2) * w)
-        y1 = int((yc - bh / 2) * h)
-        x2 = int((xc + bw / 2) * w)
-        y2 = int((yc + bh / 2) * h)
-        
-        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
-        
-        # Optional: Label mit Konfidenz hinzufügen
-        if len(label) > 5:
-            conf = label[5]
-            text = f"{label_prefix}{int(label[0])} ({conf:.2f})"
-        else:
-            text = f"{label_prefix}{int(label[0])}"
-            
-        cv2.putText(image, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness)
-    return image
-
-def main(image_id):
-    # 1. Bild laden
-    img_path = find_image_path(image_id)
-    if not img_path:
-        print(f"❌ Bild mit ID '{image_id}' nicht gefunden.")
-        return
-    
-    image = cv2.imread(img_path)
-    if image is None:
-        print(f"❌ Fehler beim Laden des Bildes: {img_path}")
-        return
-
-    # 2. Pfade zu den Label-Dateien
-    inference_run_name = cfg["inference"]["run_name"] # Lese den aktuellen Inferenz-Lauf
-    yolo_pred_path = os.path.join(cfg["paths"]["yolo_inference"], image_id + ".txt")
-    gnn_validated_path = os.path.join(cfg["paths"]["output_root"], "validated_labels", inference_run_name, image_id + ".txt")
-
-    # 3. Labels laden
-    yolo_labels = load_yolo_labels(yolo_pred_path, with_confidence=True)
-    gnn_labels = load_yolo_labels(gnn_validated_path, with_confidence=True)
-
-    print(f"Original YOLO predictions: {len(yolo_labels)} boxes")
-    print(f"GNN validated predictions: {len(gnn_labels)} boxes")
-
-    # 4. Boxen identifizieren, die entfernt wurden
-    yolo_boxes_set = {tuple(row) for row in yolo_labels}
-    gnn_boxes_set = {tuple(row) for row in gnn_labels}
-    removed_boxes = np.array(list(yolo_boxes_set - gnn_boxes_set))
-    
-    # 5. Visualisieren
+def draw_visualization(image, boxes, edge_index, errors, yolo_confs, status, anomaly_thresh, yolo_thresh):
+    """
+    Draws the complete decision process on the image:
+    1. Graph connections (Edges)
+    2. Bounding Boxes (Color-coded by decision)
+    3. Metrics (YOLO Confidence, GNN Error)
+    """
+    img_h, img_w = image.shape[:2]
     vis_image = image.copy()
-    thickness = cfg["visualization"]["line_thickness"]
     
-    if len(gnn_labels) > 0:
-        vis_image = draw_boxes(vis_image, gnn_labels, cfg["visualization"]["kept_box_color"], thickness)
-    if len(removed_boxes) > 0:
-        vis_image = draw_boxes(vis_image, removed_boxes, cfg["visualization"]["removed_box_color"], thickness)
+    # --- Colors (BGR) ---
+    COLOR_KEPT = (0, 255, 0)      # Green
+    COLOR_REMOVED = (0, 0, 255)   # Red
+    COLOR_EDGE = (0, 255, 255)    # Yellow
+    COLOR_TEXT = (0, 0, 0)        # Black Text
+    
+    # --- 1. Draw Graph Structure (Edges) ---
+    # This visualizes the k-NN relationships used by the GNN
+    if edge_index is not None:
+        src_indices = edge_index[0].cpu().numpy()
+        dst_indices = edge_index[1].cpu().numpy()
+        
+        # Calculate center points for all nodes (boxes)
+        centers = []
+        for box in boxes:
+            xc, yc, w, h = box
+            x_px = int(xc * img_w)
+            y_px = int(yc * img_h)
+            centers.append((x_px, y_px))
+            
+        # Draw lines between connected nodes
+        for s, d in zip(src_indices, dst_indices):
+            if s < d: # Draw each edge only once
+                cv2.line(vis_image, centers[s], centers[d], COLOR_EDGE, 2, cv2.LINE_AA)
 
-    h, w = vis_image.shape[:2]
-    scale = min(MAX_SIZE / w, MAX_SIZE / h, 1.0)
-    if scale < 1.0:
-        new_w, new_h = int(w * scale), int(h * scale)
-        vis_image = cv2.resize(vis_image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # --- 2. Draw Bounding Boxes & Decision Metrics ---
+    for i, box in enumerate(boxes):
+        xc, yc, w, h = box
+        error = errors[i]
+        conf = yolo_confs[i]
+        stat = status[i]
+        
+        # Convert normalized coordinates to pixels
+        x1 = int((xc - w / 2) * img_w)
+        y1 = int((yc - h / 2) * img_h)
+        x2 = int((xc + w / 2) * img_w)
+        y2 = int((yc + h / 2) * img_h)
+        
+        # Determine Color based on Status
+        color = COLOR_KEPT if stat == "kept" else COLOR_REMOVED
+        
+        # Draw Box
+        cv2.rectangle(vis_image, (x1, y1), (x2, y2), color, 2)
+        
+        # --- Explainability Text ---
+        # Show YOLO Confidence and GNN Reconstruction Error
+        # HC = High Confidence (YOLO), LC = Low Confidence (YOLO)
+        conf_type = "HC" if conf >= yolo_thresh else "LC"
+        
+        text_line1 = f"YOLO: {conf:.2f} ({conf_type})"
+        text_line2 = f"GNN Err: {error:.4f}"
+        
+        # Calculate text size for background box
+        font_scale = 0.5
+        thickness = 1
+        (w1, h1), _ = cv2.getTextSize(text_line1, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        (w2, h2), _ = cv2.getTextSize(text_line2, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        
+        box_w = max(w1, w2) + 6
+        box_h = h1 + h2 + 10
+        
+        # Position text above the box
+        text_y = y1 - box_h if y1 - box_h > 0 else y1
+        
+        # Draw filled background for readability
+        cv2.rectangle(vis_image, (x1, text_y), (x1 + box_w, text_y + box_h), color, -1)
+        
+        # Draw Text
+        cv2.putText(vis_image, text_line1, (x1 + 3, text_y + h1 + 3), cv2.FONT_HERSHEY_SIMPLEX, font_scale, COLOR_TEXT, thickness, cv2.LINE_AA)
+        cv2.putText(vis_image, text_line2, (x1 + 3, text_y + h1 + h2 + 6), cv2.FONT_HERSHEY_SIMPLEX, font_scale, COLOR_TEXT, thickness, cv2.LINE_AA)
 
-    cv2.imshow(f"Validation for {image_id}", vis_image)
-    print("\nDrücken Sie eine beliebige Taste, um das Fenster zu schließen.")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # --- 3. Legend ---
+    legend_x, legend_y = 10, 30
+    cv2.putText(vis_image, "Edges: k-NN Graph Structure", (legend_x, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_EDGE, 2)
+    cv2.putText(vis_image, "Green: Kept (Valid Geometry)", (legend_x, legend_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_KEPT, 2)
+    cv2.putText(vis_image, "Red: Removed (Geometric Anomaly)", (legend_x, legend_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_REMOVED, 2)
+    cv2.putText(vis_image, f"Anomaly Threshold: {anomaly_thresh}", (legend_x, legend_y + 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+    return vis_image
+
+def main():
+    # 1. Setup & Config
+    cfg = load_config()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # 2. Load GNN Model
+    training_run = cfg["inference"]["training_run_to_use"]
+    model_path = os.path.join(cfg["paths"]["output_root"], "trained_models", training_run, "model.pt")
+    
+    if not os.path.exists(model_path):
+        print(f"❌ Model not found at {model_path}")
+        print(f"Please check 'inference.training_run_to_use' in config.yaml")
+        return
+
+    model = GNN(
+        in_channels=cfg["gnn"]["input_features"],
+        hidden_channels=cfg["gnn"]["hidden_dim"],
+        out_channels=cfg["gnn"]["output_dim"],
+        num_layers=cfg["gnn"]["num_layers"]
+    ).to(device)
+    
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+    print(f"✅ Model loaded from {model_path}")
+
+    # 3. Select Random Files
+    label_dir = cfg["paths"]["yolo_inference"]
+    all_files = [f for f in os.listdir(label_dir) if f.endswith(".txt")]
+    
+    if not all_files:
+        print(f"❌ No label files found in {label_dir}")
+        return
+        
+    selected_files = random.sample(all_files, min(5, len(all_files)))
+    print(f"🔍 Selected {len(selected_files)} random files for visualization.")
+
+    # 4. Prepare Output Directory
+    label_folder_name = os.path.basename(os.path.normpath(label_dir))
+    output_dir = os.path.join(cfg["paths"]["output_root"], "visualized_GNN", label_folder_name)
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"📂 Saving visualizations to: {output_dir}")
+
+    # 5. Process Files
+    k = cfg["gnn"]["k_neighbors"]
+    yolo_thresh = cfg["inference"]["yolo_confidence_threshold"]
+    anomaly_thresh = cfg["inference"]["anomaly_threshold"]
+
+    for filename in tqdm(selected_files, desc="Visualizing GNN Inference"):
+        image_id = os.path.splitext(filename)[0]
+        label_path = os.path.join(label_dir, filename)
+        
+        # Load Data
+        labels = load_yolo_labels(label_path, with_confidence=True)
+        if labels.shape[0] == 0:
+            continue
+            
+        img_path = get_image_path(image_id, cfg)
+        if not img_path:
+            print(f"⚠️ Image for {image_id} not found.")
+            continue
+            
+        image = cv2.imread(img_path)
+        if image is None:
+            continue
+
+        # Prepare GNN Input
+        boxes = labels[:, 1:5] # x, y, w, h
+        confs = labels[:, 5]
+        
+        # Build Graph (Full Context)
+        graph = build_knn_graph(boxes, k=k)
+        if graph is None:
+            continue
+        graph = graph.to(device)
+        
+        # Run Inference
+        with torch.no_grad():
+            reconstructed_x = model(graph)
+            
+        # Calculate Reconstruction Errors
+        errors = torch.norm(reconstructed_x - graph.x, p=2, dim=1).cpu().numpy()
+        
+        # Determine Status (Replicating inference logic)
+        status = []
+        for i in range(len(labels)):
+            conf = confs[i]
+            err = errors[i]
+            
+            if conf >= yolo_thresh:
+                status.append("kept") # High confidence YOLO is trusted
+            else:
+                if err > anomaly_thresh:
+                    status.append("removed") # Low conf + High error = Anomaly
+                else:
+                    status.append("kept") # Low conf + Low error = Validated
+
+        # Draw Visualization
+        vis_image = draw_visualization(
+            image, boxes, graph.edge_index, errors, confs, status, 
+            anomaly_thresh, yolo_thresh
+        )
+        
+        # Save Result
+        save_path = os.path.join(output_dir, f"{image_id}_gnn_vis.jpg")
+        cv2.imwrite(save_path, vis_image)
+        
+    print("\n✅ Visualization complete.")
+    print(f"Images saved to: {output_dir}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Visualisiert die Ergebnisse der GNN-Validierung.")
-    parser.add_argument("--image_id", type=str, required=True, help="Die ID des Bildes (ohne Dateiendung), das visualisiert werden soll.")
-    args = parser.parse_args()
-    
-    main(args.image_id)
+    main()
