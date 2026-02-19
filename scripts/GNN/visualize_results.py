@@ -194,10 +194,11 @@ def main():
 
         # Prepare GNN Input
         boxes = labels[:, 1:5] # x, y, w, h
+        gnn_features = labels[:, 1:3] # x, y
         confs = labels[:, 5]
         
         # Build Graph (Full Context)
-        graph = build_knn_graph(boxes, k=k)
+        graph = build_knn_graph(gnn_features, k=k)
         if graph is None:
             continue
         graph = graph.to(device)

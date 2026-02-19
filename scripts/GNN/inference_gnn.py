@@ -84,8 +84,8 @@ def main():
             continue
 
         # 2. Erstelle Graphen aus ALLEN Boxen für den räumlichen Kontext
-        all_boxes = labels[:, 1:5] # Nur Geometrie für den Graphen
-        graph = build_knn_graph(all_boxes, k=k)
+        gnn_features = labels[:, 1:3] # Nur x, y für den Graphen nutzen
+        graph = build_knn_graph(gnn_features, k=k)
         
         if graph is None:
             continue

@@ -8,23 +8,23 @@ paths:
   output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/GNN/outputs"
 
 gnn:
-  input_features: 4  # x, y, w, h
+  input_features: 2  # x, y
   hidden_dim: 32
-  output_dim: 4      # Autoencoder sollte Eingabe rekonstruieren
+  output_dim: 2      # Autoencoder sollte Eingabe rekonstruieren
   num_layers: 3
   k_neighbors: 8     # Für k-NN Graph-Erstellung
 
 training:
-  run_name: "training_1" # Name für diese Trainingssitzung. Das Modell wird in einem Ordner mit diesem Namen gespeichert.
+  run_name: "training_xy_1" # Name für diese Trainingssitzung. Das Modell wird in einem Ordner mit diesem Namen gespeichert.
   epochs: 100
   batch_size: 1
   lr: 0.001
 
 inference:
-  training_run_to_use: "training_1" # Welches trainierte Modell soll für die Inferenz verwendet werden (Name des Trainingslauf-Ordners).
-  run_name: "inference_w_anomaly_0.001_0.2(YOLO_s_conf_0,05)" # Name für diese Validierungssitzung. Ausgaben werden in einem Ordner mit diesem Namen gespeichert.
-  yolo_confidence_threshold: 0.2 # Boxen darüber werden übernommen, darunter geprüft.
-  anomaly_threshold: 0.001        # Rekonstruktionsfehler-Schwelle für Anomalien.
+  training_run_to_use: "training_xy_1" # Welches trainierte Modell soll für die Inferenz verwendet werden (Name des Trainingslauf-Ordners).
+  run_name: "inference_xy_anomaly_0.0001_0.3(YOLO_s_conf_0,05)" # Name für diese Validierungssitzung. Ausgaben werden in einem Ordner mit diesem Namen gespeichert.
+  yolo_confidence_threshold: 0.3 # Boxen darüber werden übernommen, darunter geprüft.
+  anomaly_threshold: 0.0001        # Rekonstruktionsfehler-Schwelle für Anomalien.
   log_anomaly_errors: true # Soll eine CSV-Datei mit den Rekonstruktionsfehlern der geprüften Boxen erstellt werden? (true/false)
 
 evaluation:

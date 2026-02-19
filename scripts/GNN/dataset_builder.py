@@ -26,9 +26,9 @@ def build_dataset(label_folder, k):
         if labels.shape[0] == 0:
             continue
             
-        # Node Features sind nur die Geometrie (x, y, w, h)
+        # Node Features sind nur die Geometrie (x, y)
         # Wir ignorieren die Klasse für das Training des räumlichen Modells
-        boxes = labels[:, 1:5]
+        boxes = labels[:, 1:3]
         
         graph = build_knn_graph(boxes, k=k)
         

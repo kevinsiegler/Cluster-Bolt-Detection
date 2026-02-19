@@ -1,0 +1,41 @@
+project:
+  name: "Bolt_Cluster_Completion"
+  version: "1.0"
+
+paths:
+  # Input Directories
+  train_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/train"
+  val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
+  # Output Directories (Scripts will create subfolders here)
+  output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/Cluster/Outputs"
+  # Where to save/load the learned prototypes
+  model_dir: "models"
+
+preprocessing:
+  # Normalize coordinates to [0,1] based on image size (assumed 1.0 if normalized YOLO)
+  use_normalized_coords: true
+
+clustering:
+  # Name of the model file to save/load (without .pkl extension)
+  model_name: "500_cluster"
+  # Feature-based clustering is faster than pairwise point-set distance for 6500 images
+  n_clusters: 500  # Number of prototype layouts to learn. Increase this for more variety.
+  random_state: 42
+  # After clustering, remove prototypes that are too similar to others (distance < threshold)
+  pruning_threshold: 0.01
+
+inference:
+  # Name of the current run (used for output folder naming)
+  run_name: "run_v4_more_clusters"
+  # Threshold to consider a point "matched" (in normalized coordinates 0.0-1.0)
+  match_threshold: 0.05 
+  # If true, aligns prototype to input using Translation + Scale. If false, Translation only.
+  allow_scaling: false
+  # Default size for predicted boxes (width, height)
+  default_box_size: [0.03, 0.03]
+
+evaluation:
+  # Distance threshold for True Positive (normalized)
+  dist_threshold: 0.05
+  # IoU threshold for True Positive
+  iou_threshold: 0.3

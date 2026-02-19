@@ -1,0 +1,46 @@
+# c:\Users\Kevin\Clustererkennung\bolt_detection\scripts\Missing_Bolt_GNN\config.yaml
+
+project_name: "Missing_Bolt_GNN"
+
+paths:
+  # Wo liegen die Daten?
+  train_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/train"
+  val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
+  # Wo sollen die Ergebnisse hin?
+  output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/Missing_Bolt_GNN/output"
+
+model:
+  hidden_dim: 128
+  num_layers: 4
+  k_neighbors: 5
+  dropout: 0.1
+
+training:
+  # Name für diesen Trainingslauf (erstellt Ordner: output/training/run_v1)
+  run_name: "run_v1"
+  
+  lr: 0.001
+  batch_size: 16
+  epochs: 50
+  patience: 20
+  mask_ratio_min: 0.1
+  mask_ratio_max: 0.4
+  noise_scale: 0.005
+  neg_pos_ratio: 3
+
+inference:
+  # Name für diesen Inferenzlauf (erstellt Ordner: output/inference/infer_test_01)
+  run_name: "infer_test_01"
+  
+  # Welches trainierte Modell soll genutzt werden? (Name des Ordners in output/training)
+  model_train_run: "run_v1"
+  
+  grid_density: 20
+  prob_threshold: 0.7
+  nms_threshold: 0.05
+
+evaluation:
+  # Welcher Inferenzlauf soll ausgewertet werden? (Name des Ordners in output/inference)
+  inference_run: "infer_test_01"
+  
+  distance_threshold: 0.05
