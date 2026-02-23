@@ -17,22 +17,22 @@ preprocessing:
 
 clustering:
   # Name of the model file to save/load (without .pkl extension)
-  model_name: "500_cluster"
+  model_name: "2000_cluster"
   # Feature-based clustering is faster than pairwise point-set distance for 6500 images
-  n_clusters: 500  # Number of prototype layouts to learn. Increase this for more variety.
+  n_clusters: 2000  # Number of prototype layouts to learn. Increase this for more variety.
   random_state: 42
   # After clustering, remove prototypes that are too similar to others (distance < threshold)
-  pruning_threshold: 0.01
+  pruning_threshold: 0.005
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "run_v4_more_clusters"
+  run_name: "run_v7_robust_noscaling"
   # Threshold to consider a point "matched" (in normalized coordinates 0.0-1.0)
-  match_threshold: 0.05 
+  match_threshold: 0.022
   # If true, aligns prototype to input using Translation + Scale. If false, Translation only.
   allow_scaling: false
   # Default size for predicted boxes (width, height)
-  default_box_size: [0.03, 0.03]
+  default_box_size: [0.014, 0.025]
 
 evaluation:
   # Distance threshold for True Positive (normalized)

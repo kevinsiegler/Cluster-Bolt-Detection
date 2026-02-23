@@ -119,7 +119,7 @@ def run_inference():
         # The `best_score` is the average distance of input points to the aligned prototype.
         # A good match should have an average error significantly smaller than the individual point match_threshold.
         # We make the check much stricter to reject ambiguous or poor alignments.
-        if best_proto is not None and best_score < (match_thresh / 2.0):
+        if best_proto is not None and best_score < match_thresh:
             # Check which points in the Best Prototype do NOT have a match in Input
             dists = cdist(best_aligned_proto, input_pts)
             # For each proto point, how far is the nearest input point?

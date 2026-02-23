@@ -2,13 +2,13 @@
 
 ## Ziel des Systems
 
-Dieses System dient als **räumliche Validierungsschicht nach YOLOv8**, um die Präzision der Schraubendetektion zu erhöhen.
+Dieses System dient als **räumliche Validierungsschicht für einen Kandidaten-Generator** (z.B. das Cluster-Modul), um die Präzision bei der Vervollständigung von Schraubenmustern drastisch zu erhöhen.
 
-Ziel ist es, seltene Falsch-Positive-Detektionen (geometrisch unplausible Schrauben-Boxen) zu entfernen, ohne den Recall signifikant zu verschlechtern. Die eigentliche Klassifizierung (Schraube vorhanden/fehlend) wird von YOLOv8 übernommen.
+Ziel ist es, geometrisch unplausible Kandidaten für fehlende Schrauben (Falsch-Positive) zu identifizieren und zu entfernen, um eine hohe Präzision zu erreichen, während der hohe Recall des vorgeschalteten Systems erhalten bleibt.
 
 Der GNN-Validator prüft ausschließlich die Frage:
 
-> „Ist diese von YOLO erkannte Schraube (oder Lücke) geometrisch plausibel im lokalen Kontext ihrer Nachbarn?“
+> „Ist dieser Kandidat für eine fehlende Schraube geometrisch plausibel im lokalen Kontext der bereits vorhandenen Schrauben?“
 
 Das System basiert auf einem **Graph-Autoencoder**, der auf die normalen, räumlichen Anordnungen von Schrauben trainiert wird.
 
@@ -20,7 +20,7 @@ Die Pipeline ist in drei Hauptphasen unterteilt: Training, Inferenz und Visualis
 
 **1. Training (Lernen der "normalen" Geometrie):**
 
-`Ground Truth Labels` → `Graph-Erstellung (k-NN)` → `Training des Graph-Autoencoders`
+`Idealisierte Prototypen (aus Cluster-Modell)` → `Graph-Erstellung (k-NN)` → `Training des Graph-Autoencoders`
 
 - Aus den Ground-Truth-Labels (nur Positionen, keine Klassen) werden für jedes Bild Graphen erstellt.
 - Jede Bounding Box ist ein **Knoten (Node)** im Graph.
@@ -30,36 +30,21 @@ Die Pipeline ist in drei Hauptphasen unterteilt: Training, Inferenz und Visualis
 
 **2. Inferenz (Validierung der YOLO-Ergebnisse):**
 
-`YOLO-Prediction` → `Confidence-Filter` → `Graph-Erstellung` → `GNN-Inferenz` → `Anomalie-Prüfung` → `Gefilterte Labels`
+`Vervollständigte Labels (Originale: Klasse 0, Kandidaten: Klasse 1)` → `Graph-Erstellung` → `GNN-Inferenz` → `Anomalie-Prüfung` → `Gefilterte Labels`
 
-- Eine YOLO-Prediction wird geladen (`class, x, y, w, h, conf`).
-- Boxen mit `confidence >= yolo_confidence_threshold` werden **direkt als korrekt übernommen**.
-- Für die restlichen Boxen (`confidence < yolo_confidence_threshold`) wird eine Prüfung durchgeführt:
-  1. Ein Graph wird aus **allen** Boxen des Bildes erstellt, um den vollen Kontext zu nutzen.
-  2. Der trainierte Autoencoder versucht, die Features aller Knoten zu rekonstruieren.
-  3. Für jede niedrig-konfidente Box wird der **Rekonstruktionsfehler** berechnet.
-  4. Ist der Fehler größer als der `anomaly_threshold`, wird die Box als Anomalie (False Positive) markiert und **verworfen**.
+- Eine vervollständigte Label-Datei wird geladen. Sie enthält originale Schrauben (Klasse 0) und vom Cluster-Modul hinzugefügte Kandidaten für fehlende Schrauben (Klasse 1).
+- Eine Prüfung wird **nur für die Kandidaten (Klasse 1)** durchgeführt:
+  1. Ein Graph wird aus **allen** Boxen des Bildes (Originale + Kandidaten) erstellt, um den vollen räumlichen Kontext zu nutzen.
+  2. Der trainierte Autoencoder versucht, die Positionen aller Knoten zu rekonstruieren.
+  3. Für jeden **Kandidaten-Knoten** wird der **Rekonstruktionsfehler** (Abstand zwischen Original- und rekonstruierter Position) berechnet.
+  4. Ist der Fehler größer als der `anomaly_threshold`, wird der Kandidat als geometrische Anomalie (False Positive) markiert und **verworfen**.
+  5. Alle originalen Schrauben (Klasse 0) und alle validierten Kandidaten bleiben erhalten.
 - Das Ergebnis ist eine bereinigte Label-Datei mit höherer Präzision.
 
 ---
 
 ## Projektstruktur
-
-```
-scripts/
-└─ GNN/
-   ├─ config.yaml                # Alle Konfigurationen und Pfade
-   ├─ requirements.txt
-   ├─ utils.py                   # Hilfsfunktionen (Label-Handling, Graph-Erstellung)
-   ├─ dataset_builder.py         # Erstellt die Trainings-Graphen aus Ground Truth Labels
-   ├─ train_gnn.py               # Trainiert das Graph-Autoencoder-Modell
-   ├─ inference_gnn.py           # Validiert YOLO-Predictions und entfernt Anomalien
-   ├─ visualize_results.py       # Visualisiert die gefilterten Ergebnisse
-   └─ outputs/
-       ├─ model.pt                 # Das trainierte Modell
-       ├─ datasets/                # Gespeicherte Graphen für das Training
-       └─ validated_labels/        # Die bereinigten Label-Dateien
-```
+...
 
 ---
 
@@ -94,5 +79,4 @@ python visualize_results.py --image_id <ID_des_Bildes>
 ## Wichtige Parameter in `config.yaml`
 
 - `gnn.k_neighbors`: Anzahl der Nachbarn für die k-NN-Grapherstellung. Ein höherer Wert erfasst einen größeren lokalen Kontext. (Empfehlung: 5-10)
-- `inference.yolo_confidence_threshold`: YOLO-Detektionen über diesem Schwellenwert werden als korrekt angenommen und nicht geprüft. (Empfehlung: 0.1 - 0.5)
-- `inference.anomaly_threshold`: Schwellenwert für den Rekonstruktionsfehler. Boxen mit einem höheren Fehler werden als Anomalie entfernt. (Muss experimentell ermittelt werden, z.B. 0.01 - 0.05)
+- `inference.anomaly_threshold`: Schwellenwert für den Rekonstruktionsfehler. Kandidaten-Boxen mit einem höheren Fehler werden als Anomalie entfernt. Dieser Wert muss experimentell ermittelt werden, ein guter Startpunkt ist ein Wert in der Größenordnung der Bounding-Box-Dimensionen (z.B. 0.015).

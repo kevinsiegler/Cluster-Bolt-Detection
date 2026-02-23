@@ -6,14 +6,14 @@ from tqdm import tqdm
 from utils import load_yolo_labels, build_knn_graph
 from train_gnn import GNN # Annahme: train_gnn.py definiert die GNN-Klasse
 
-def filter_and_save_labels(output_path, original_labels, keep_indices):
-    """Speichert die gefilterten Labels in einer neuen Datei."""
-    kept_labels = original_labels[keep_indices]
-    
+def save_yolo_labels_5_cols(output_path, labels):
+    """Speichert Labels im 5-spaltigen YOLO-Format (class, x, y, w, h)."""
     with open(output_path, "w") as f:
-        for label in kept_labels:
-            # Format: class_id x y w h conf
-            line = f"{int(label[0])} {label[1]:.6f} {label[2]:.6f} {label[3]:.6f} {label[4]:.6f} {label[5]:.6f}\n"
+        if labels.shape[0] == 0:
+            return
+        for label in labels:
+            # Format: class_id x y w h
+            line = f"{int(label[0])} {label[1]:.6f} {label[2]:.6f} {label[3]:.6f} {label[4]:.6f}\n"
             f.write(line)
 
 def main():
@@ -52,7 +52,6 @@ def main():
     print(f"Filtered labels for run '{inference_run_name}' will be saved to: {output_dir}")
 
     # --- Inferenz & Anomalie-Erkennung ---
-    conf_thresh = cfg["inference"]["yolo_confidence_threshold"]
     anomaly_thresh = cfg["inference"]["anomaly_threshold"]
     k = cfg["gnn"]["k_neighbors"]
     
@@ -64,85 +63,53 @@ def main():
         label_path = os.path.join(yolo_preds_dir, filename)
         
         # Lade YOLO-Vorhersagen (mit Konfidenz)
-        # Format: [class, x, y, w, h, conf]
-        labels = load_yolo_labels(label_path, with_confidence=True)
+        # Format: [class, x, y, w, h] -> Output vom Cluster-Skript
+        labels = load_yolo_labels(label_path, with_confidence=False)
 
         if labels.shape[0] == 0:
             continue
 
-        # 1. Teile Boxen nach Konfidenz auf
-        high_conf_mask = labels[:, 5] >= conf_thresh
-        low_conf_mask = ~high_conf_mask
+        # 1. Teile Boxen nach Klasse auf: 0=Original, 1=Kandidat vom Cluster-Modul
+        original_mask = labels[:, 0] == 0
+        candidate_mask = labels[:, 0] == 1
         
-        high_conf_indices = np.where(high_conf_mask)[0]
-        low_conf_indices_in_original = np.where(low_conf_mask)[0]
+        original_labels = labels[original_mask]
+        candidate_labels = labels[candidate_mask]
 
-        # Wenn alle Boxen hohe Konfidenz haben, gibt es nichts zu prüfen
-        if len(low_conf_indices_in_original) == 0:
+        # Wenn keine Kandidaten da sind, gibt es nichts zu prüfen
+        if candidate_labels.shape[0] == 0:
             output_path = os.path.join(output_dir, filename)
-            filter_and_save_labels(output_path, labels, np.arange(len(labels)))
+            save_yolo_labels_5_cols(output_path, original_labels)
             continue
 
         # 2. Erstelle Graphen aus ALLEN Boxen für den räumlichen Kontext
-        gnn_features = labels[:, 1:3] # Nur x, y für den Graphen nutzen
+        gnn_features = labels[:, 1:3] # Nur x, y für den Graphen
         graph = build_knn_graph(gnn_features, k=k)
         
         if graph is None:
+            # Sollte nicht passieren, wenn labels.shape[0] > 0
             continue
 
         # 3. Führe GNN-Inferenz auf dem Graphen durch
         graph = graph.to(device)
         with torch.no_grad():
             reconstructed_x = model(graph)
-        
+
         # 4. Berechne Rekonstruktionsfehler für jede Box (Node)
         errors = torch.norm(reconstructed_x - graph.x, p=2, dim=1).cpu().numpy()
 
-        # Logge die Fehler der niedrig-konfidenten Boxen für die Analyse
-        image_id = os.path.splitext(filename)[0]
-        for i, original_idx in enumerate(low_conf_indices_in_original):
-            confidence = labels[original_idx, 5]
-            error = errors[original_idx]
-            error_log.append({
-                "image_id": image_id,
-                "confidence": confidence,
-                "reconstruction_error": error
-            })
-
-        # 5. Identifiziere anomale Boxen UNTER den niedrig-konfidenten
-        low_conf_errors = errors[low_conf_indices_in_original]
-        is_anomalous_mask = low_conf_errors > anomaly_thresh
-        anomalous_low_conf_indices = np.where(is_anomalous_mask)[0]
-        indices_to_remove = low_conf_indices_in_original[anomalous_low_conf_indices]
+        # 5. Identifiziere anomale Boxen UNTER den Kandidaten (Klasse 1)
+        candidate_errors = errors[candidate_mask] # Fehler nur für Kandidaten
+        is_valid_mask = candidate_errors <= anomaly_thresh
         
-        # 6. Bestimme die final zu behaltenden Boxen
-        all_indices = set(range(len(labels)))
-        indices_to_remove_set = set(indices_to_remove)
-        keep_indices = sorted(list(all_indices - indices_to_remove_set))
+        validated_candidates = candidate_labels[is_valid_mask]
+        
+        # 6. Kombiniere Originale und validierte Kandidaten
+        final_labels = np.vstack([original_labels, validated_candidates]) if validated_candidates.shape[0] > 0 else original_labels
 
-        # 7. Speichere das gefilterte Ergebnis
+        # 7. Speichere das bereinigte Ergebnis
         output_path = os.path.join(output_dir, filename)
-        filter_and_save_labels(output_path, labels, keep_indices)
-
-    # Speichere das Fehlerprotokoll in einer CSV-Datei zur einfachen Analyse
-    if cfg["inference"].get("log_anomaly_errors", False) and error_log:
-        import csv
-        
-        # Erstelle einen dedizierten Ordner für die Logs
-        log_dir = os.path.join(cfg["paths"]["output_root"], "anomaly_logs")
-        os.makedirs(log_dir, exist_ok=True)
-        
-        # Benenne die CSV-Datei nach dem Inferenzlauf
-        log_path = os.path.join(log_dir, f"{inference_run_name}_error_log.csv")
-        print(f"\nWriting anomaly error log to: {log_path}")
-        try:
-            with open(log_path, 'w', newline='') as csvfile:
-                fieldnames = ["image_id", "confidence", "reconstruction_error"]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(error_log)
-        except IOError as e:
-            print(f"❌ Error writing log file: {e}")
+        save_yolo_labels_5_cols(output_path, final_labels)
 
     print("\n🎉 Validation complete.")
 

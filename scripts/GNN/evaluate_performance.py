@@ -33,6 +33,10 @@ def box_iou_xywh(box1, box2):
     box2_area = box2[2] * box2[3]
     union_area = box1_area + box2_area - intersection_area
 
+    # Verhindert Division durch Null, wenn eine Box keine Fläche hat.
+    if union_area <= 0:
+        return 0.0
+
     return intersection_area / union_area
 
 def calculate_metrics_per_class(gt_labels, pred_labels, iou_threshold):
@@ -219,7 +223,19 @@ def main():
 
         aggregate(yolo_agg, yolo_stats)
         aggregate(gnn_agg, gnn_stats)
-        # Nach der Aggregation
+
+
+    # Output file setup
+    perf_dir = os.path.join(cfg["paths"]["output_root"], "performance_ratings")
+    os.makedirs(perf_dir, exist_ok=True)
+    log_path = os.path.join(perf_dir, f"{inference_run_name}.txt")
+
+    with open(log_path, "w", encoding="utf-8") as f:
+        def log_func(msg):
+            print(msg)
+            f.write(msg + "\n")
+        
+        # Globale Metriken hier berechnen, direkt vor der Ausgabe
         global_yolo_agg = {
             "tp": yolo_agg[0]["tp"] + yolo_agg[1]["tp"],
             "wrong": yolo_agg[0]["wrong"] + yolo_agg[1]["wrong"],
@@ -233,22 +249,6 @@ def main():
             "missed": gnn_agg[0]["missed"] + gnn_agg[1]["missed"],
             "fp": gnn_agg[0]["fp"] + gnn_agg[1]["fp"]
         }
-
-        global_yolo_metrics = compute_metrics(global_yolo_agg)
-        global_gnn_metrics = compute_metrics(global_gnn_agg)
-
-    # ===== Ausgabe hier innerhalb von main =====
-
-
-    # Output file setup
-    perf_dir = os.path.join(cfg["paths"]["output_root"], "performance_ratings")
-    os.makedirs(perf_dir, exist_ok=True)
-    log_path = os.path.join(perf_dir, f"{inference_run_name}.txt")
-
-    with open(log_path, "w", encoding="utf-8") as f:
-        def log_func(msg):
-            print(msg)
-            f.write(msg + "\n")
 
         print_table("CLASS 0 – BOLT", yolo_agg[0], gnn_agg[0], log_func=log_func)
         print_table("CLASS 1 – MISSING BOLT", yolo_agg[1], gnn_agg[1], log_func=log_func)
