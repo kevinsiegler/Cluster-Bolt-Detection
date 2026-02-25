@@ -4,8 +4,10 @@ project:
 
 paths:
   # Input Directories
-  train_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/train"
+  train_labels: "C:\\Users\\Kevin\\Clustererkennung\\bolt_detection\\dataset\\all_labels"
   val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
+  # Input directory for inference run
+  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels_subset"
   # Output Directories (Scripts will create subfolders here)
   output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/Cluster/Outputs"
   # Where to save/load the learned prototypes
@@ -17,20 +19,22 @@ preprocessing:
 
 clustering:
   # Name of the model file to save/load (without .pkl extension)
-  model_name: "2000_cluster"
+  model_name: "6580_cluster"
   # Feature-based clustering is faster than pairwise point-set distance for 6500 images
-  n_clusters: 2000  # Number of prototype layouts to learn. Increase this for more variety.
+  n_clusters: 6580  # Number of prototype layouts to learn. Increase this for more variety.
   random_state: 42
   # After clustering, remove prototypes that are too similar to others (distance < threshold)
-  pruning_threshold: 0.005
+  pruning_threshold: 0
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "run_v7_robust_noscaling"
+  run_name: "YOLO_run1"
   # Threshold to consider a point "matched" (in normalized coordinates 0.0-1.0)
   match_threshold: 0.022
   # If true, aligns prototype to input using Translation + Scale. If false, Translation only.
   allow_scaling: false
+  # If true, removes input points that do not match the selected prototype.
+  filter_input_points: true
   # Default size for predicted boxes (width, height)
   default_box_size: [0.014, 0.025]
 

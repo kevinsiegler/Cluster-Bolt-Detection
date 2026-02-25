@@ -35,7 +35,7 @@ def draw_boxes(image, boxes, color, thickness):
         cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
     return image
 
-@st.cache_data(show_spinner="Lade und bewerte Inferenz-Ergebnisse (dies dauert einen Moment)...")
+@st.cache_data(show_spinner="Lade und bewerte Inferenz-Ergebnisse...", ttl=600)
 def load_and_evaluate_all_data():
     """
     Lädt die Ergebnisse eines abgeschlossenen Inferenz-Laufs und evaluiert sie.
@@ -47,7 +47,9 @@ def load_and_evaluate_all_data():
     # --- Pfade ---
     run_name = cfg['inference']['run_name']
     pred_dir = os.path.join(cfg['paths']['output_root'], "inference", run_name)
+    val_input_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_input")
     val_gt_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_gt")
+    inference_input_dir = cfg['paths']['inference_input_dir']
     
     if not os.path.isdir(pred_dir):
         st.error(f"Inferenz-Verzeichnis nicht gefunden: `{pred_dir}`. Bitte führen Sie zuerst `inference.py` aus.")
@@ -55,49 +57,79 @@ def load_and_evaluate_all_data():
 
     # --- Lade alle relevanten Dateien ---
     eval_files = [f for f in os.listdir(val_gt_dir) if f.endswith('.npy')]
-    eval_dist_thresh = cfg['evaluation']['dist_threshold']
+    dist_thresh = cfg['evaluation']['dist_threshold']
     
     all_results = []
 
     for filename in eval_files:
         image_id = os.path.splitext(filename)[0]
         pred_path = os.path.join(pred_dir, f"{image_id}.txt")
-        if not os.path.exists(pred_path): continue
+        if not os.path.exists(pred_path): continue # Überspringe, wenn keine Prognose existiert
         
-        # Lade Ground Truth (fehlende Schrauben) und die Prognose
-        gt_data = np.load(os.path.join(val_gt_dir, filename))
+        # --- Lade alle Daten für die Auswertung ---
+        input_data = np.load(os.path.join(val_input_dir, f"{image_id}.npy"))
+        gt_missing_data = np.load(os.path.join(val_gt_dir, filename))
+        
+        # Lade auch den YOLO-Input für die korrekte Berechnung der "entfernten" Schrauben
+        inf_input_path = os.path.join(inference_input_dir, f"{image_id}.txt")
+        inf_labels = load_yolo_labels(inf_input_path)
+        # Nur Klasse 0 (vorhandene) interessiert uns hier als Basis
+        inf_input_data = inf_labels[inf_labels[:, 0] == 0][:, 1:5] if len(inf_labels) > 0 else np.empty((0, 4))
+
         pred_labels = load_yolo_labels(pred_path)
         
-        candidate_points = pred_labels[pred_labels[:, 0] == 1][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
+        # Trenne Prognosen nach Klasse
+        pred_kept_bolts = pred_labels[pred_labels[:, 0] == 0][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
+        pred_missing_bolts = pred_labels[pred_labels[:, 0] == 1][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
+
+        # --- Zähle die neuen Metriken ---
         
-        # Evaluiere die geladene Prognose
-        gt_pts_xy = gt_data[:, :2] if gt_data.shape[0] > 0 else np.empty((0, 2))
-        pred_pts_xy = candidate_points[:, :2] if candidate_points.shape[0] > 0 else np.empty((0, 2))
+        # 1. Entfernte Schrauben (Gelb)
+        # Hier vergleichen wir YOLO-Input (inf_input_data) mit dem Output (pred_kept_bolts)
+        count_removed = 0
+        if cfg['inference'].get('filter_input_points', False) and inf_input_data.shape[0] > 0:
+            if pred_kept_bolts.shape[0] > 0:
+                dists = cdist(inf_input_data[:, :2], pred_kept_bolts[:, :2])
+                min_dists_to_kept = np.min(dists, axis=1)
+                count_removed = int(np.sum(min_dists_to_kept > dist_thresh))
+            else:
+                count_removed = inf_input_data.shape[0]
 
-        tp, fp, fn = 0, 0, 0
-        n_gt, n_pred = gt_pts_xy.shape[0], pred_pts_xy.shape[0]
+        # 2. Evaluiere die Prognosen für fehlende Schrauben
+        matched_gt_missing_indices = set()
+        matched_pred_missing_indices = set()
 
-        if n_gt > 0 and n_pred > 0:
-            dists = cdist(gt_pts_xy, pred_pts_xy)
-            matched_gt_indices = set()
-            matched_pred_indices = set()
-            for i in range(n_gt):
-                best_pred_idx = np.argmin(dists[i])
-                min_dist = dists[i, best_pred_idx]
-                if min_dist < eval_dist_thresh and best_pred_idx not in matched_pred_indices:
-                    matched_pred_indices.add(best_pred_idx)
-                    matched_gt_indices.add(i)
-            tp = len(matched_gt_indices)
-            fn = n_gt - tp
-            fp = n_pred - tp
-        elif n_gt > 0:
-            fn = n_gt
-        elif n_pred > 0:
-            fp = n_pred
+        # Pass 1: Finde TPs (Grün)
+        if gt_missing_data.shape[0] > 0 and pred_missing_bolts.shape[0] > 0:
+            dists_pred_gt_missing = cdist(pred_missing_bolts[:,:2], gt_missing_data[:,:2])
+            for i in range(pred_missing_bolts.shape[0]):
+                best_gt_idx = np.argmin(dists_pred_gt_missing[i, :])
+                if dists_pred_gt_missing[i, best_gt_idx] < dist_thresh and best_gt_idx not in matched_gt_missing_indices:
+                    matched_pred_missing_indices.add(i)
+                    matched_gt_missing_indices.add(best_gt_idx)
+        count_tp_missing = len(matched_pred_missing_indices)
+
+        # Pass 3: Übrige sind reine FPs (Rot)
+        count_fp_pure = pred_missing_bolts.shape[0] - len(matched_pred_missing_indices)
+
+        # Pass 4: Übrige GTs sind FNs (Blau)
+        count_fn_missing = gt_missing_data.shape[0] - len(matched_gt_missing_indices)
+
+        # Pass 5: Verdeckte Fehler (YOLO FP maskiert Missing)
+        # YOLO sagt "da ist was" (Class 0), Cluster behält es, aber GT sagt "da fehlt was" (Class 1).
+        count_masking = 0
+        if pred_kept_bolts.shape[0] > 0 and gt_missing_data.shape[0] > 0:
+            dists = cdist(pred_kept_bolts[:, :2], gt_missing_data[:, :2])
+            min_dists = np.min(dists, axis=1)
+            count_masking = int(np.sum(min_dists < dist_thresh))
 
         all_results.append({
             "image_id": image_id,
-            "tp": tp, "fp": fp, "fn": fn
+            "tp_missing": count_tp_missing,
+            "fp_pure": count_fp_pure,
+            "fn_missing": count_fn_missing,
+            "removed_fp": count_removed,
+            "masking_fp": count_masking
         })
     return all_results
 
@@ -106,18 +138,31 @@ def compute_visualization_data(image_id, cfg, prototypes):
     val_input_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_input")
     val_gt_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_gt")
     pred_dir = os.path.join(cfg['paths']['output_root'], "inference", cfg['inference']['run_name'])
+    inference_input_dir = cfg['paths']['inference_input_dir']
 
-    input_data = np.load(os.path.join(val_input_dir, f"{image_id}.npy"))
-    gt_data = np.load(os.path.join(val_gt_dir, f"{image_id}.npy"))
-    gt_missing_boxes = gt_data if gt_data.ndim == 2 and gt_data.shape[0] > 0 else np.empty((0, 4))
+    # Lade Ground-Truth Daten für die finale Auswertung (Panel 3)
+    gt_input_data = np.load(os.path.join(val_input_dir, f"{image_id}.npy"))
+    gt_missing_data = np.load(os.path.join(val_gt_dir, f"{image_id}.npy"))
+
+    # Lade die tatsächlichen Input-Daten, die für die Inferenz verwendet wurden (für Panel 1 & 2)
+    inference_input_path = os.path.join(inference_input_dir, f"{image_id}.txt")
+    all_inference_input_labels = load_yolo_labels(inference_input_path)
+    if len(all_inference_input_labels) > 0:
+        inference_input_labels = all_inference_input_labels[all_inference_input_labels[:, 0] == 0]
+    else:
+        inference_input_labels = np.empty((0, 5))
+    inference_input_data = inference_input_labels[:, 1:5]
 
     pred_labels = load_yolo_labels(os.path.join(pred_dir, f"{image_id}.txt"))
-    candidate_points = pred_labels[pred_labels[:, 0] == 1][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
+    pred_kept_bolts = pred_labels[pred_labels[:, 0] == 0][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
+    pred_missing_bolts = pred_labels[pred_labels[:, 0] == 1][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
 
+    # --- Berechne das Alignment für das mittlere Panel ---
+    # WICHTIG: Verwende hier die `inference_input_data`, um den Inferenz-Prozess exakt nachzubilden
     best_score = float('inf')
     best_aligned_proto_xy = None
-    if input_data.shape[0] >= 2:
-        input_pts_xy = input_data[:, :2]
+    if inference_input_data.shape[0] >= 2:
+        input_pts_xy = inference_input_data[:, :2]
         for proto in prototypes:
             proto_pts_xy = proto['points'][:, :2]
             if len(proto_pts_xy) < len(input_pts_xy): continue
@@ -137,56 +182,112 @@ def compute_visualization_data(image_id, cfg, prototypes):
                 best_score = current_proto_best_score
                 best_aligned_proto_xy = current_proto_best_aligned
     
-    # --- Evaluiere die Prognose, um TP, FP, FN für die Visualisierung zu finden ---
-    eval_dist_thresh = cfg['evaluation']['dist_threshold']
-    true_positives = []
-    false_positives = []
-    false_negatives = []
+    # --- Sortiere alle Boxen in die neuen Kategorien für die Visualisierung ---
+    dist_thresh = cfg['evaluation']['dist_threshold']
+    
+    # Kategorie: Behaltene vs. entfernte Input-Schrauben
+    # Hier wird der YOLO-Input (inference_input_data) mit dem finalen Output verglichen
+    kept_input_bolts, removed_input_bolts = [], []
+    if cfg['inference'].get('filter_input_points', False) and inference_input_data.shape[0] > 0:
+        if pred_kept_bolts.shape[0] > 0:
+            dists = cdist(inference_input_data[:, :2], pred_kept_bolts[:, :2])
+            matched_input_indices = set(np.argmin(dists, axis=0))
+            for i in range(inference_input_data.shape[0]):
+                if i in matched_input_indices: kept_input_bolts.append(inference_input_data[i])
+                else: removed_input_bolts.append(inference_input_data[i])
+        else:
+            removed_input_bolts = list(inference_input_data)
+    else:
+        kept_input_bolts = list(inference_input_data)
 
-    pred_boxes = candidate_points
-    gt_boxes = gt_missing_boxes
+    # Unterteile 'kept_input_bolts' in 'normal' und 'masking' (Verdeckte Fehler)
+    normal_kept_bolts = []
+    masking_kept_bolts = []
+    
+    if len(kept_input_bolts) > 0:
+        kept_arr = np.array(kept_input_bolts)
+        if gt_missing_data.shape[0] > 0:
+             dists = cdist(kept_arr[:, :2], gt_missing_data[:, :2])
+             min_dists = np.min(dists, axis=1)
+             for i, d in enumerate(min_dists):
+                 if d < dist_thresh:
+                     masking_kept_bolts.append(kept_input_bolts[i])
+                 else:
+                     normal_kept_bolts.append(kept_input_bolts[i])
+        else:
+            normal_kept_bolts = list(kept_input_bolts)
 
-    if gt_boxes.shape[0] > 0 and pred_boxes.shape[0] > 0:
-        dists = cdist(gt_boxes[:, :2], pred_boxes[:, :2])
-        matched_gt_indices = set()
-        matched_pred_indices = set()
+    # Kategorien für fehlende Schrauben
+    tp_missing, fp_on_existing, fp_pure, fn_missing = [], [], [], []
+    matched_gt_missing_indices, matched_pred_missing_indices = set(), set()
 
-        # Finde True Positives
-        for i in range(gt_boxes.shape[0]):
-            best_pred_idx = np.argmin(dists[i])
-            if dists[i, best_pred_idx] < eval_dist_thresh and best_pred_idx not in matched_pred_indices:
-                true_positives.append(pred_boxes[best_pred_idx])
-                matched_gt_indices.add(i)
-                matched_pred_indices.add(best_pred_idx)
-        
-        # Finde False Positives (übrige Prognosen)
-        for j in range(pred_boxes.shape[0]):
-            if j not in matched_pred_indices:
-                false_positives.append(pred_boxes[j])
+    # Pass 1: Finde TPs (Grün)
+    if gt_missing_data.shape[0] > 0 and pred_missing_bolts.shape[0] > 0:
+        dists_pred_gt_missing = cdist(pred_missing_bolts[:,:2], gt_missing_data[:,:2])
+        for i in range(pred_missing_bolts.shape[0]):
+            best_gt_idx = np.argmin(dists_pred_gt_missing[i, :])
+            if dists_pred_gt_missing[i, best_gt_idx] < dist_thresh and best_gt_idx not in matched_gt_missing_indices:
+                tp_missing.append(pred_missing_bolts[i])
+                matched_pred_missing_indices.add(i)
+                matched_gt_missing_indices.add(best_gt_idx)
 
-        # Finde False Negatives (übrige Ground Truths)
-        for i in range(gt_boxes.shape[0]):
-            if i not in matched_gt_indices:
-                false_negatives.append(gt_boxes[i])
+    # Pass 3: Übrige sind reine FPs (Rot)
+    for i in range(pred_missing_bolts.shape[0]):
+        if i not in matched_pred_missing_indices:
+            fp_pure.append(pred_missing_bolts[i])
 
-    elif gt_boxes.shape[0] > 0: # Nur GT, keine Prognosen
-        false_negatives = list(gt_boxes)
-    elif pred_boxes.shape[0] > 0: # Nur Prognosen, kein GT
-        false_positives = list(pred_boxes)
+    # Pass 4: Übrige GTs sind FNs (Blau)
+    for i in range(gt_missing_data.shape[0]):
+        if i not in matched_gt_missing_indices:
+            fn_missing.append(gt_missing_data[i])
 
     return {
-        "input_data": input_data,
-        "candidate_points": candidate_points,
+        "input_data": inference_input_data, # Gib die Inferenz-Daten für Panel 1 zurück
         "best_aligned_proto_xy": best_aligned_proto_xy,
-        "true_positives": np.array(true_positives),
-        "false_positives": np.array(false_positives),
-        "false_negatives": np.array(false_negatives),
+        "normal_kept_bolts": np.array(normal_kept_bolts),
+        "masking_kept_bolts": np.array(masking_kept_bolts),
+        "removed_input_bolts": np.array(removed_input_bolts),
+        "tp_missing": np.array(tp_missing),
+        "fp_pure": np.array(fp_pure),
+        "fn_missing": np.array(fn_missing),
     }
 
 # --- Streamlit UI ---
 
 st.set_page_config(layout="wide")
 st.title("Cluster-Vervollständigung: Analyse-Dashboard")
+
+# --- Sidebar für Steuerung ---
+st.sidebar.header("Einstellungen")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### Legende (Panel 3)")
+legend_html = """
+<div style="display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px;">
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(0, 150, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Vorhanden</span>
+    </div>
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(0, 255, 0); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Korrekt</span>
+    </div>
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(255, 255, 0); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Entfernt</span>
+    </div>
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(255, 0, 0); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Falsch</span>
+    </div>
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(0, 0, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Übersehen/Verdeckt</span>
+    </div>
+</div>
+"""
+st.sidebar.markdown(legend_html, unsafe_allow_html=True)
+st.sidebar.markdown("---")
 
 # Lade alle Ergebnisse (wird gecached)
 evaluation_results = load_and_evaluate_all_data()
@@ -208,32 +309,56 @@ def load_models_and_configs():
 
 cfg, prototypes, image_folders = load_models_and_configs()
 
-# --- Sidebar für Steuerung ---
-st.sidebar.header("Einstellungen")
-num_images = st.sidebar.slider("Anzahl der Beispiele", 1, 10, 3)
 filter_option = st.sidebar.selectbox(
     "Filtere nach Ergebnis-Typ",
-    ["Alle", "Perfekte Treffer (TP > 0, FP=0, FN=0)", "Mit falschen Prognosen (FP > 0)", "Mit übersehenen Schrauben (FN > 0)"]
+    [
+        "Alle",
+        "Perfekte Treffer (Nur TP)",
+        "Fall 1: YOLO-Fehler entfernt (Gelb)",
+        "Fall 2: Verdeckter Fehler (Blau)",
+        "Fall 3: Falsch ergänzt (Rot)",
+        "Fall 4: Übersehen (Blau)"
+    ]
 )
+num_images = st.sidebar.slider("Anzahl der Beispiele", 1, 10, 3)
+
+# Erklärungstexte für die Filter
+explanations = {
+    "Alle": "Zeigt alle Bilder ohne Filterung.",
+    "Perfekte Treffer (Nur TP)": "YOLO hat eine Lücke gelassen. Das Cluster-Modell hat die fehlende Schraube an der richtigen Stelle ergänzt. Keine Fehler.",
+    "Fall 1: YOLO-Fehler entfernt (Gelb)": "YOLO hat fälschlicherweise eine Schraube erkannt. Das Cluster-Modell hat erkannt, dass sie dort nicht hingehört und sie entfernt.",
+    "Fall 2: Verdeckter Fehler (Blau)": "YOLO hat fälschlicherweise eine 'vorhandene' Schraube erkannt, wo eigentlich eine fehlt. Das Cluster-Modell hat die Position bestätigt, wodurch die Korrektur zur 'fehlenden' Schraube verhindert wurde.",
+    "Fall 3: Falsch ergänzt (Rot)": "YOLO hat nichts erkannt, und das Cluster-Modell hat fälschlicherweise eine fehlende Schraube hinzugefügt, wo keine sein sollte.",
+    "Fall 4: Übersehen (Blau)": "Eine fehlende Schraube wurde weder von YOLO noch vom Cluster-Modell erkannt."
+}
+
+st.sidebar.info(f"**Info zum Filter:**\n\n{explanations[filter_option]}")
 
 if st.sidebar.button("Neue zufällige Bilder laden"):
-    # Dieser Button löst einfach einen Re-Run des Skripts aus, was zu einer neuen Zufallsauswahl führt
-    pass
+    st.cache_data.clear()
 
 # --- Filtere die Ergebnisse basierend auf der Auswahl ---
 filtered_results = []
 for res in evaluation_results:
-    is_perfect = res["tp"] > 0 and res["fp"] == 0 and res["fn"] == 0
-    has_fp = res["fp"] > 0
-    has_fn = res["fn"] > 0
+    # Logik für die Filter
+    has_removed_fp = res["removed_fp"] > 0
+    has_fp_pure = res["fp_pure"] > 0
+    has_fn = res["fn_missing"] > 0
+    has_masking = res["masking_fp"] > 0
+    has_tp = res["tp_missing"] > 0
+    is_perfect = has_tp and not has_removed_fp and not has_fp_pure and not has_fn and not has_masking
 
     if filter_option == "Alle":
         filtered_results.append(res)
-    elif filter_option == "Perfekte Treffer (TP > 0, FP=0, FN=0)" and is_perfect:
+    elif filter_option == "Perfekte Treffer (Nur TP)" and is_perfect:
         filtered_results.append(res)
-    elif filter_option == "Mit falschen Prognosen (FP > 0)" and has_fp:
+    elif filter_option == "Fall 1: YOLO-Fehler entfernt (Gelb)" and has_removed_fp:
         filtered_results.append(res)
-    elif filter_option == "Mit übersehenen Schrauben (FN > 0)" and has_fn:
+    elif filter_option == "Fall 2: Verdeckter Fehler (Blau)" and has_masking:
+        filtered_results.append(res)
+    elif filter_option == "Fall 3: Falsch ergänzt (Rot)" and has_fp_pure:
+        filtered_results.append(res)
+    elif filter_option == "Fall 4: Übersehen (Blau)" and has_fn:
         filtered_results.append(res)
 
 if not filtered_results:
@@ -255,7 +380,12 @@ else:
 
         st.divider()
         st.subheader(f"Bild: {image_id}")
-        st.write(f"**Ergebnis:** Richtig erkannt (TP): {res['tp']}, Falsche Prognose (FP): {res['fp']}, Übersehen (FN): {res['fn']}")
+        st.write(f"**Ergebnis:** "
+                 f"Korrekt ergänzt (TP): **{res['tp_missing']}** | "
+                 f"Entfernt: **{res['removed_fp']}** | "
+                 f"Falsch ergänzt (FP): **{res['fp_pure']}** | "
+                 f"Übersehen (FN): **{res['fn_missing']}** | "
+                 f"Verdeckt: **{res['masking_fp']}**")
 
         img_path = find_image_path(image_id, image_folders)
         if not img_path: continue
@@ -267,20 +397,26 @@ else:
         # Erstelle die 3-Panel-Visualisierung on-the-fly
         COLOR_INPUT = (255, 150, 0)      # Hellblau
         COLOR_PROTOTYPE = (255, 0, 255)  # Magenta
-        COLOR_TP = (0, 255, 0)           # Grün
-        COLOR_FP = (0, 255, 255)         # Gelb
-        COLOR_FN = (0, 0, 255)           # Rot
+        
+        # Farben für Panel 3
+        COLOR_TP_MISSING = (0, 255, 0)           # Grün
+        COLOR_REMOVED_FP = (0, 255, 255)         # Gelb
+        COLOR_MASKING_FP = (255, 0, 0)           # Dunkelblau (Verdeckter Fehler)
+        COLOR_FP_PURE = (0, 0, 255)              # Rot
+        COLOR_FN_MISSING = (255, 0, 0)           # Blau (oder Rot/Orange je nach Wunsch, hier Blau wie angefordert "farblich hervorrufen")
+
         COLOR_ALIGN_LINE = (0, 255, 0)
         COLOR_TEXT = (255, 255, 255)
 
         # Panel 1: Input
         img1 = image.copy()
         draw_boxes(img1, vis_data["input_data"][:, :4], COLOR_INPUT, base_thickness + 1)
-        cv2.putText(img1, "1. Input", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, COLOR_TEXT, 2)
+        cv2.putText(img1, "1. Input (YOLO)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
 
         # Panel 2: Alignment
         img2 = image.copy()
         if vis_data["best_aligned_proto_xy"] is not None:
+            # Berechne Boxen für den Prototyp basierend auf der Durchschnittsgröße des Inputs
             avg_w = np.mean(vis_data["input_data"][:, 2]) if vis_data["input_data"].shape[0] > 0 else 0.014
             avg_h = np.mean(vis_data["input_data"][:, 3]) if vis_data["input_data"].shape[0] > 0 else 0.025
             proto_boxes = np.hstack([vis_data["best_aligned_proto_xy"], np.full((vis_data["best_aligned_proto_xy"].shape[0], 2), [avg_w, avg_h])])
@@ -295,21 +431,22 @@ else:
                 p1 = (int(input_pt[0] * w), int(input_pt[1] * h))
                 p2 = (int(proto_pt[0] * w), int(proto_pt[1] * h))
                 cv2.line(img2, p1, p2, COLOR_ALIGN_LINE, base_thickness, cv2.LINE_AA)
-        cv2.putText(img2, "2. Alignment", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, COLOR_TEXT, 2)
+        cv2.putText(img2, "2. Alignment", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
 
         # Panel 3: Prognose
         img3 = image.copy()
-        if 'proto_boxes' in locals() and vis_data["best_aligned_proto_xy"] is not None:
-            draw_boxes(img3, proto_boxes, COLOR_PROTOTYPE, base_thickness -1 if base_thickness > 1 else 1)
-        draw_boxes(img3, vis_data["input_data"][:, :4], COLOR_INPUT, base_thickness + 1)
-        if vis_data["true_positives"].shape[0] > 0:
-            draw_boxes(img3, vis_data["true_positives"], COLOR_TP, base_thickness + 2)
-        if vis_data["false_positives"].shape[0] > 0:
-            draw_boxes(img3, vis_data["false_positives"], COLOR_FP, base_thickness + 2)
-        if vis_data["false_negatives"].shape[0] > 0:
-            draw_boxes(img3, vis_data["false_negatives"], COLOR_FN, base_thickness + 2)
-        cv2.putText(img3, "3. Auswertung der Prognose", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, COLOR_TEXT, 2)
-        cv2.putText(img3, "Korrekt (Gruen), Falsch (Gelb), Uebersehen (Rot)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_TEXT, 2)
+        # Zeichne alle Boxen in der richtigen Reihenfolge für gute Sichtbarkeit
+        if vis_data["normal_kept_bolts"].shape[0] > 0:
+            draw_boxes(img3, vis_data["normal_kept_bolts"], COLOR_INPUT, base_thickness + 1)
+        if vis_data["masking_kept_bolts"].shape[0] > 0:
+            draw_boxes(img3, vis_data["masking_kept_bolts"], COLOR_MASKING_FP, base_thickness + 2)
+        if vis_data["fn_missing"].shape[0] > 0:
+            draw_boxes(img3, vis_data["fn_missing"], COLOR_FN_MISSING, base_thickness + 2)
+        if vis_data["fp_pure"].shape[0] > 0:
+            draw_boxes(img3, vis_data["fp_pure"], COLOR_FP_PURE, base_thickness + 2)
+        if vis_data["tp_missing"].shape[0] > 0:
+            draw_boxes(img3, vis_data["tp_missing"], COLOR_TP_MISSING, base_thickness + 2)
+        cv2.putText(img3, "3. Auswertung", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
 
         # Zeige die Bilder in drei Spalten an, um die Auflösung zu erhalten
         col1, col2, col3 = st.columns(3)

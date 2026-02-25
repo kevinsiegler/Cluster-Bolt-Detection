@@ -39,6 +39,10 @@ def train():
     # 1. Clustering
     # We use K-Means on features to group similar layouts efficiently
     n_clusters = cfg['clustering']['n_clusters']
+    if n_clusters > len(features):
+        print(f"Warning: n_clusters ({n_clusters}) > n_samples ({len(features)}). Adjusting n_clusters to {len(features)}.")
+        n_clusters = len(features)
+
     print(f"Clustering into {n_clusters} prototypes...")
     
     kmeans = KMeans(n_clusters=n_clusters, random_state=cfg['clustering']['random_state'], n_init=10)

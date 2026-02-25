@@ -5,8 +5,8 @@ import os
 import numpy as np
 import pickle
 from tqdm import tqdm
-from scipy.spatial.distance import cdist
-from utils import load_config, ensure_dir, align_points, save_yolo_labels
+from scipy.spatial.distance import cdist 
+from utils import load_config, ensure_dir, align_points, save_yolo_labels, load_yolo_labels
 
 def run_inference():
     # Load config automatically from script directory
@@ -17,11 +17,7 @@ def run_inference():
     # Paths
     model_name = cfg['clustering'].get('model_name', 'prototypes')
     model_path = os.path.join(cfg['paths']['output_root'], cfg['paths']['model_dir'], f"{model_name}.pkl")
-    input_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_input")
-    
-    # If input dir is empty/doesn't exist, maybe user wants to run on raw YOLO txts?
-    # For this script, we assume preprocessing ran. 
-    # To run on raw YOLO output, one would point input_dir there and add a loader check.
+    input_dir = cfg['paths']['inference_input_dir']
     
     output_dir = os.path.join(cfg['paths']['output_root'], "inference", run_name)
     
@@ -31,29 +27,39 @@ def run_inference():
     with open(model_path, 'rb') as f:
         prototypes = pickle.load(f)
         
-    files = [f for f in os.listdir(input_dir) if f.endswith('.npy')]
+    files = [f for f in os.listdir(input_dir) if f.endswith('.txt')]
     
     match_thresh = cfg['inference']['match_threshold']
     allow_scaling = cfg['inference']['allow_scaling']
+    filter_input = cfg['inference'].get('filter_input_points', False)
     def_w, def_h = cfg['inference']['default_box_size']
     
     print(f"Running inference on {len(files)} files...")
     
     for filename in tqdm(files):
         # Load Input (Observed Bolts)
-        # This now assumes the .npy file contains [x, y, w, h] from preprocessing
-        input_data = np.load(os.path.join(input_dir, filename))
+        # This now loads from YOLO txt files, ignoring class.
+        all_labels = load_yolo_labels(os.path.join(input_dir, filename))
+
+        # --- NEU: Filtere nur nach Klasse 0 (vorhandene Schrauben) als Input ---
+        # Alle bereits existierenden Klasse-1-Labels aus der Eingabe werden ignoriert.
+        if len(all_labels) > 0:
+            labels = all_labels[all_labels[:, 0] == 0]
+        else:
+            labels = np.empty((0, 5))
+
+        if len(labels) == 0:
+            save_yolo_labels(os.path.join(output_dir, filename), np.array([]))
+            continue
+        input_data = labels[:, 1:5] # Use x,y,w,h
         
         if input_data.shape[0] < 2 or input_data.shape[1] < 2:
             # Not enough points to match structure
-            # Save empty result or copy input
-            output_rows = []
-            if input_data.shape[0] > 0 and input_data.shape[1] >= 4:
-                 output_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
-            elif input_data.shape[0] > 0: # Fallback for old format
-                 output_rows = [[0, row[0], row[1], def_w, def_h] for row in input_data]
-
-            save_yolo_labels(os.path.join(output_dir, filename.replace('.npy', '.txt')), np.array(output_rows))
+            if not filter_input:
+                output_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
+                save_yolo_labels(os.path.join(output_dir, filename), np.array(output_rows))
+            else:
+                save_yolo_labels(os.path.join(output_dir, filename), np.array([]))
             continue
 
         # Use only x,y for geometric matching
@@ -119,14 +125,40 @@ def run_inference():
         # The `best_score` is the average distance of input points to the aligned prototype.
         # A good match should have an average error significantly smaller than the individual point match_threshold.
         # We make the check much stricter to reject ambiguous or poor alignments.
+        
+        # PROBLEM 1 FIX: Use a looser threshold for deciding if a specific point is missing.
+        # Allow slight shifts (perspective/cutout) to still count as "present".
+        missing_detection_thresh = match_thresh * 2
+
+        input_rows = []
         if best_proto is not None and best_score < match_thresh:
-            # Check which points in the Best Prototype do NOT have a match in Input
+            # 1-to-1 Matching Logic (Greedy)
             dists = cdist(best_aligned_proto, input_pts)
-            # For each proto point, how far is the nearest input point?
-            min_dists_proto_to_input = np.min(dists, axis=1)
+            dists_copy = dists.copy()
+            matched_proto_indices = set()
+            matched_input_indices = set()
             
-            # If distance is large, it's missing in the input
-            missing_indices = np.where(min_dists_proto_to_input > match_thresh)[0]
+            while True:
+                # Find minimum distance in the matrix
+                if np.all(np.isinf(dists_copy)):
+                    break
+                
+                min_idx = np.unravel_index(np.argmin(dists_copy), dists_copy.shape)
+                min_dist = dists_copy[min_idx]
+                
+                if min_dist > missing_detection_thresh:
+                    break
+                
+                p_idx, i_idx = min_idx
+                matched_proto_indices.add(p_idx)
+                matched_input_indices.add(i_idx)
+                
+                # Mask out this prototype point and this input point
+                dists_copy[p_idx, :] = float('inf')
+                dists_copy[:, i_idx] = float('inf')
+            
+            # Any prototype point not matched is considered missing
+            missing_indices = [i for i in range(len(best_aligned_proto)) if i not in matched_proto_indices]
             
             for idx in missing_indices:
                 pt = best_aligned_proto[idx]
@@ -139,20 +171,28 @@ def run_inference():
                 # Check bounds
                 if 0 <= pt[0] <= 1 and 0 <= pt[1] <= 1:
                     predicted_missing.append([1, pt[0], pt[1], avg_w, avg_h])
+            
+            # Decide which input points to keep
+            if filter_input:
+                kept_indices = sorted(list(matched_input_indices))
+                input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data[kept_indices]]
+            else:
+                input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
+        
+        else: # No good prototype match found
+            if not filter_input:
+                input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
         
         predicted_missing = np.array(predicted_missing)
-        
+
         # 3. Save Result
-        # Reconstruct input rows (Class 0) using their ORIGINAL w,h
-        input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
-        
         if len(predicted_missing) > 0:
             final_output = np.vstack([input_rows, predicted_missing])
         else:
             final_output = np.array(input_rows)
             
         # Save YOLO txt
-        save_yolo_labels(os.path.join(output_dir, filename.replace('.npy', '.txt')), final_output)
+        save_yolo_labels(os.path.join(output_dir, filename), final_output)
 
     print(f"Inference complete. Results in {output_dir}")
 

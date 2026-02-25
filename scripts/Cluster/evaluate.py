@@ -14,32 +14,43 @@ def evaluate():
     
     pred_dir = os.path.join(cfg['paths']['output_root'], "inference", run_name)
     gt_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_gt") # Contains only missing bolts
+    inference_input_dir = cfg['paths']['inference_input_dir'] # YOLO Input (Class 0)
     
     if not os.path.exists(pred_dir):
         print("Prediction directory not found.")
         return
 
-    files = [f for f in os.listdir(gt_dir) if f.endswith('.npy')]
+    # Evaluate only files present in the prediction directory (subset)
+    files = [f for f in os.listdir(pred_dir) if f.endswith('.txt')]
     
     tp_total = 0
     fp_total = 0
     fn_total = 0
     total_dist_error = 0
+    fn_due_to_yolo_occlusion = 0 # New metric: Missing bolts missed because YOLO said "present"
     
     dist_thresh = cfg['evaluation']['dist_threshold']
     
-    print(f"Evaluating {len(files)} files against Ground Truth...")
+    print(f"Evaluating {len(files)} files (subset) against Ground Truth...")
     
     for filename in files:
+        # filename is .txt from pred_dir
+        
         # Load GT Missing (Points)
-        gt_pts = np.load(os.path.join(gt_dir, filename))
+        gt_filename = filename.replace('.txt', '.npy')
+        gt_path = os.path.join(gt_dir, gt_filename)
+        
+        if not os.path.exists(gt_path):
+            continue
+            
+        gt_pts = np.load(gt_path)
         
         # Fix: GT now has 4 columns (x,y,w,h) from preprocessing, but we evaluate on x,y
         if gt_pts.ndim == 2 and gt_pts.shape[1] > 2:
             gt_pts = gt_pts[:, :2]
         
         # Load Prediction (YOLO txt)
-        pred_path = os.path.join(pred_dir, filename.replace('.npy', '.txt'))
+        pred_path = os.path.join(pred_dir, filename)
         pred_labels = load_yolo_labels(pred_path)
         
         # Filter for Class 1 (Predicted Missing)
@@ -48,6 +59,13 @@ def evaluate():
         else:
             pred_pts = np.empty((0, 2))
             
+        # Load YOLO Input (Class 0) to check for occlusions
+        yolo_input_path = os.path.join(inference_input_dir, filename)
+        yolo_labels = load_yolo_labels(yolo_input_path)
+        yolo_pts = np.empty((0, 2))
+        if len(yolo_labels) > 0:
+            yolo_pts = yolo_labels[yolo_labels[:, 0] == 0][:, 1:3]
+
         # Matching Logic
         n_gt = len(gt_pts)
         n_pred = len(pred_pts)
@@ -61,6 +79,12 @@ def evaluate():
             
         if n_pred == 0:
             fn_total += n_gt
+            # Check if these FNs were caused by YOLO false positives
+            if len(yolo_pts) > 0:
+                dists_yolo = cdist(gt_pts, yolo_pts)
+                min_dists_yolo = np.min(dists_yolo, axis=1)
+                # If a GT missing bolt is close to a YOLO present bolt, Cluster couldn't predict it
+                fn_due_to_yolo_occlusion += np.sum(min_dists_yolo < dist_thresh)
             continue
             
         # Distance Matrix
@@ -86,7 +110,15 @@ def evaluate():
                     local_tp += 1
                     local_dist_error += min_dist
         
-        local_fn = n_gt - len(matched_gt)
+        # Analyze False Negatives
+        unmatched_gt_indices = [i for i in range(n_gt) if i not in matched_gt]
+        local_fn = len(unmatched_gt_indices)
+        
+        if local_fn > 0 and len(yolo_pts) > 0:
+            unmatched_gt_pts = gt_pts[unmatched_gt_indices]
+            dists_yolo = cdist(unmatched_gt_pts, yolo_pts)
+            fn_due_to_yolo_occlusion += np.sum(np.min(dists_yolo, axis=1) < dist_thresh)
+
         local_fp = n_pred - len(matched_pred)
         
         tp_total += local_tp
@@ -100,17 +132,33 @@ def evaluate():
     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     avg_error = total_dist_error / tp_total if tp_total > 0 else 0
     
-    print("\n" + "="*30)
-    print(f"EVALUATION REPORT: {run_name}")
-    print("="*30)
-    print(f"Correct Predictions (TP): {tp_total}")
-    print(f"Wrong Predictions   (FP): {fp_total}")
-    print(f"Missed Bolts        (FN): {fn_total}")
-    print("-" * 30)
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall:    {recall:.4f}")
-    print(f"F1 Score:  {f1:.4f}")
-    print("="*30)
+    report_lines = [
+        "="*30,
+        f"EVALUATION REPORT: {run_name}",
+        "="*30,
+        f"Correct Predictions (TP): {tp_total}",
+        f"Wrong Predictions   (FP): {fp_total}",
+        f"Missed Bolts        (FN): {fn_total}",
+        f"  -> Due to YOLO FP : {fn_due_to_yolo_occlusion} (Cluster blocked by wrong YOLO detection)",
+        "-" * 30,
+        f"Precision: {precision:.4f}",
+        f"Recall:    {recall:.4f}",
+        f"F1 Score:  {f1:.4f}",
+        f"Avg Error: {avg_error:.6f}",
+        "="*30
+    ]
+    report_text = "\n".join(report_lines)
+    print("\n" + report_text)
+
+    # Save report to file
+    ratings_dir = os.path.join(cfg['paths']['output_root'], "performance_ratings")
+    ensure_dir(ratings_dir)
+    
+    save_path = os.path.join(ratings_dir, f"{run_name}.txt")
+    with open(save_path, 'w') as f:
+        f.write(report_text)
+        
+    print(f"Report saved to {save_path}")
 
 if __name__ == "__main__":
     evaluate()

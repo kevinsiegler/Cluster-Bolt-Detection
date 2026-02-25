@@ -131,7 +131,7 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 # ABSOLUTE PFADE (FIXED LOCATIONS)
 # ============================================================
 
-EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\GNN\outputs\validated_labels"
+EVAL_BASE = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\YOLO\testing\infer_train_30_epochs_m_conf(0.4)"
 
 # Ground Truth (immer gleich)
 DEFAULT_GT = r"C:\Users\Kevin\Clustererkennung\bolt_detection\dataset\labels\val"
