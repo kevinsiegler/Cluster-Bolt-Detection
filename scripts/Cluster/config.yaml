@@ -7,7 +7,7 @@ paths:
   train_labels: "C:\\Users\\Kevin\\Clustererkennung\\bolt_detection\\dataset\\all_labels"
   val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
   # Input directory for inference run
-  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels_subset"
+  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels"
   # Output Directories (Scripts will create subfolders here)
   output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/Cluster/Outputs"
   # Where to save/load the learned prototypes
@@ -28,7 +28,7 @@ clustering:
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "YOLO_run1"
+  run_name: "YOLO_run2_min_3_predictions"
   # Threshold to consider a point "matched" (in normalized coordinates 0.0-1.0)
   match_threshold: 0.022
   # If true, aligns prototype to input using Translation + Scale. If false, Translation only.

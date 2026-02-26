@@ -108,14 +108,28 @@ def load_and_evaluate_all_data():
                     matched_pred_missing_indices.add(i)
                     matched_gt_missing_indices.add(best_gt_idx)
         count_tp_missing = len(matched_pred_missing_indices)
+        
+        # NEU: Pass 2 & 3: Finde fp_on_existing und fp_pure
+        count_fp_on_existing = 0
+        unmatched_pred_indices = [i for i in range(pred_missing_bolts.shape[0]) if i not in matched_pred_missing_indices]
+        
+        # `input_data` hier sind die GT class 0 Schrauben
+        if len(unmatched_pred_indices) > 0 and input_data.shape[0] > 0:
+            unmatched_preds = pred_missing_bolts[unmatched_pred_indices]
+            dists = cdist(unmatched_preds[:, :2], input_data[:, :2])
+            min_dists = np.min(dists, axis=1)
+            
+            # Zähle wie viele der ungematchten auf einer vorhandenen Schraube liegen
+            fp_on_existing_mask = min_dists < dist_thresh
+            count_fp_on_existing = int(np.sum(fp_on_existing_mask))
 
-        # Pass 3: Übrige sind reine FPs (Rot)
-        count_fp_pure = pred_missing_bolts.shape[0] - len(matched_pred_missing_indices)
+        # Übrige sind reine FPs (Rot)
+        count_fp_pure = (pred_missing_bolts.shape[0] - count_tp_missing) - count_fp_on_existing
 
         # Pass 4: Übrige GTs sind FNs (Blau)
         count_fn_missing = gt_missing_data.shape[0] - len(matched_gt_missing_indices)
 
-        # Pass 5: Verdeckte Fehler (YOLO FP maskiert Missing)
+        # Verdeckte Fehler (YOLO FP maskiert Missing)
         # YOLO sagt "da ist was" (Class 0), Cluster behält es, aber GT sagt "da fehlt was" (Class 1).
         count_masking = 0
         if pred_kept_bolts.shape[0] > 0 and gt_missing_data.shape[0] > 0:
@@ -129,7 +143,8 @@ def load_and_evaluate_all_data():
             "fp_pure": count_fp_pure,
             "fn_missing": count_fn_missing,
             "removed_fp": count_removed,
-            "masking_fp": count_masking
+            "masking_fp": count_masking,
+            "fp_on_existing": count_fp_on_existing
         })
     return all_results
 
@@ -218,23 +233,34 @@ def compute_visualization_data(image_id, cfg, prototypes):
             normal_kept_bolts = list(kept_input_bolts)
 
     # Kategorien für fehlende Schrauben
-    tp_missing, fp_on_existing, fp_pure, fn_missing = [], [], [], []
+    tp_missing, fp_on_existing, fp_pure, fn_missing = [], [], [], [] # fp_on_existing hinzugefügt
     matched_gt_missing_indices, matched_pred_missing_indices = set(), set()
 
     # Pass 1: Finde TPs (Grün)
     if gt_missing_data.shape[0] > 0 and pred_missing_bolts.shape[0] > 0:
         dists_pred_gt_missing = cdist(pred_missing_bolts[:,:2], gt_missing_data[:,:2])
         for i in range(pred_missing_bolts.shape[0]):
-            best_gt_idx = np.argmin(dists_pred_gt_missing[i, :])
-            if dists_pred_gt_missing[i, best_gt_idx] < dist_thresh and best_gt_idx not in matched_gt_missing_indices:
-                tp_missing.append(pred_missing_bolts[i])
-                matched_pred_missing_indices.add(i)
-                matched_gt_missing_indices.add(best_gt_idx)
+            if dists_pred_gt_missing.shape[1] > 0:
+                best_gt_idx = np.argmin(dists_pred_gt_missing[i, :])
+                if dists_pred_gt_missing[i, best_gt_idx] < dist_thresh and best_gt_idx not in matched_gt_missing_indices:
+                    tp_missing.append(pred_missing_bolts[i])
+                    matched_pred_missing_indices.add(i)
+                    matched_gt_missing_indices.add(best_gt_idx)
 
-    # Pass 3: Übrige sind reine FPs (Rot)
+    # Pass 2 & 3: Teile die restlichen Prognosen in fp_pure und fp_on_existing auf
     for i in range(pred_missing_bolts.shape[0]):
         if i not in matched_pred_missing_indices:
-            fp_pure.append(pred_missing_bolts[i])
+            is_fp_on_existing = False
+            # gt_input_data sind die tatsächlich vorhandenen Schrauben
+            if gt_input_data.shape[0] > 0:
+                # Prüfe Abstand zu allen GT-vorhandenen Schrauben
+                dists_to_gt_input = cdist(pred_missing_bolts[i:i+1, :2], gt_input_data[:, :2])
+                if np.min(dists_to_gt_input) < dist_thresh:
+                    fp_on_existing.append(pred_missing_bolts[i])
+                    is_fp_on_existing = True
+            
+            if not is_fp_on_existing:
+                fp_pure.append(pred_missing_bolts[i])
 
     # Pass 4: Übrige GTs sind FNs (Blau)
     for i in range(gt_missing_data.shape[0]):
@@ -249,6 +275,7 @@ def compute_visualization_data(image_id, cfg, prototypes):
         "removed_input_bolts": np.array(removed_input_bolts),
         "tp_missing": np.array(tp_missing),
         "fp_pure": np.array(fp_pure),
+        "fp_on_existing": np.array(fp_on_existing),
         "fn_missing": np.array(fn_missing),
     }
 
@@ -261,9 +288,13 @@ st.title("Cluster-Vervollständigung: Analyse-Dashboard")
 st.sidebar.header("Einstellungen")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### Legende (Panel 3)")
+st.sidebar.markdown("#### Legende")
 legend_html = """
 <div style="display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px;">
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(255, 0, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Cluster-Prognose</span>
+    </div>
     <div style="display: flex; align-items: center;">
         <div style="width: 12px; height: 12px; background-color: rgb(0, 150, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
         <span>Vorhanden</span>
@@ -279,6 +310,10 @@ legend_html = """
     <div style="display: flex; align-items: center;">
         <div style="width: 12px; height: 12px; background-color: rgb(255, 0, 0); margin-right: 5px; border: 1px solid #ccc;"></div>
         <span>Falsch</span>
+    </div>
+    <div style="display: flex; align-items: center;">
+        <div style="width: 12px; height: 12px; background-color: rgb(255, 165, 0); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <span>Falsch (auf Vorhandener)</span>
     </div>
     <div style="display: flex; align-items: center;">
         <div style="width: 12px; height: 12px; background-color: rgb(0, 0, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
@@ -317,7 +352,8 @@ filter_option = st.sidebar.selectbox(
         "Fall 1: YOLO-Fehler entfernt (Gelb)",
         "Fall 2: Verdeckter Fehler (Blau)",
         "Fall 3: Falsch ergänzt (Rot)",
-        "Fall 4: Übersehen (Blau)"
+        "Fall 4: Übersehen (Blau)",
+        "Fall 5: Vorhandene übersehen & falsch ergänzt"
     ]
 )
 num_images = st.sidebar.slider("Anzahl der Beispiele", 1, 10, 3)
@@ -329,7 +365,8 @@ explanations = {
     "Fall 1: YOLO-Fehler entfernt (Gelb)": "YOLO hat fälschlicherweise eine Schraube erkannt. Das Cluster-Modell hat erkannt, dass sie dort nicht hingehört und sie entfernt.",
     "Fall 2: Verdeckter Fehler (Blau)": "YOLO hat fälschlicherweise eine 'vorhandene' Schraube erkannt, wo eigentlich eine fehlt. Das Cluster-Modell hat die Position bestätigt, wodurch die Korrektur zur 'fehlenden' Schraube verhindert wurde.",
     "Fall 3: Falsch ergänzt (Rot)": "YOLO hat nichts erkannt, und das Cluster-Modell hat fälschlicherweise eine fehlende Schraube hinzugefügt, wo keine sein sollte.",
-    "Fall 4: Übersehen (Blau)": "Eine fehlende Schraube wurde weder von YOLO noch vom Cluster-Modell erkannt."
+    "Fall 4: Übersehen (Blau)": "Eine fehlende Schraube wurde weder von YOLO noch vom Cluster-Modell erkannt.",
+    "Fall 5: Vorhandene übersehen & falsch ergänzt": "YOLO hat eine tatsächlich vorhandene Schraube übersehen. Das Cluster-Modell hat an dieser Stelle fälschlicherweise eine 'fehlende' Schraube ergänzt."
 }
 
 st.sidebar.info(f"**Info zum Filter:**\n\n{explanations[filter_option]}")
@@ -345,6 +382,7 @@ for res in evaluation_results:
     has_fp_pure = res["fp_pure"] > 0
     has_fn = res["fn_missing"] > 0
     has_masking = res["masking_fp"] > 0
+    has_fp_on_existing = res.get("fp_on_existing", 0) > 0
     has_tp = res["tp_missing"] > 0
     is_perfect = has_tp and not has_removed_fp and not has_fp_pure and not has_fn and not has_masking
 
@@ -359,6 +397,8 @@ for res in evaluation_results:
     elif filter_option == "Fall 3: Falsch ergänzt (Rot)" and has_fp_pure:
         filtered_results.append(res)
     elif filter_option == "Fall 4: Übersehen (Blau)" and has_fn:
+        filtered_results.append(res)
+    elif filter_option == "Fall 5: Vorhandene übersehen & falsch ergänzt" and has_fp_on_existing:
         filtered_results.append(res)
 
 if not filtered_results:
@@ -385,7 +425,8 @@ else:
                  f"Entfernt: **{res['removed_fp']}** | "
                  f"Falsch ergänzt (FP): **{res['fp_pure']}** | "
                  f"Übersehen (FN): **{res['fn_missing']}** | "
-                 f"Verdeckt: **{res['masking_fp']}**")
+                 f"Verdeckt: **{res['masking_fp']}** | "
+                 f"Falsch auf Vorh.: **{res.get('fp_on_existing', 0)}**")
 
         img_path = find_image_path(image_id, image_folders)
         if not img_path: continue
@@ -403,6 +444,7 @@ else:
         COLOR_REMOVED_FP = (0, 255, 255)         # Gelb
         COLOR_MASKING_FP = (255, 0, 0)           # Dunkelblau (Verdeckter Fehler)
         COLOR_FP_PURE = (0, 0, 255)              # Rot
+        COLOR_FP_ON_EXISTING = (0, 165, 255)     # Orange
         COLOR_FN_MISSING = (255, 0, 0)           # Blau (oder Rot/Orange je nach Wunsch, hier Blau wie angefordert "farblich hervorrufen")
 
         COLOR_ALIGN_LINE = (0, 255, 0)
@@ -438,12 +480,16 @@ else:
         # Zeichne alle Boxen in der richtigen Reihenfolge für gute Sichtbarkeit
         if vis_data["normal_kept_bolts"].shape[0] > 0:
             draw_boxes(img3, vis_data["normal_kept_bolts"], COLOR_INPUT, base_thickness + 1)
+        if vis_data["removed_input_bolts"].shape[0] > 0:
+            draw_boxes(img3, vis_data["removed_input_bolts"], COLOR_REMOVED_FP, base_thickness + 2)
         if vis_data["masking_kept_bolts"].shape[0] > 0:
             draw_boxes(img3, vis_data["masking_kept_bolts"], COLOR_MASKING_FP, base_thickness + 2)
         if vis_data["fn_missing"].shape[0] > 0:
             draw_boxes(img3, vis_data["fn_missing"], COLOR_FN_MISSING, base_thickness + 2)
         if vis_data["fp_pure"].shape[0] > 0:
             draw_boxes(img3, vis_data["fp_pure"], COLOR_FP_PURE, base_thickness + 2)
+        if vis_data["fp_on_existing"].shape[0] > 0:
+            draw_boxes(img3, vis_data["fp_on_existing"], COLOR_FP_ON_EXISTING, base_thickness + 2)
         if vis_data["tp_missing"].shape[0] > 0:
             draw_boxes(img3, vis_data["tp_missing"], COLOR_TP_MISSING, base_thickness + 2)
         cv2.putText(img3, "3. Auswertung", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)

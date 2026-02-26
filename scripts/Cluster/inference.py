@@ -48,19 +48,13 @@ def run_inference():
         else:
             labels = np.empty((0, 5))
 
-        if len(labels) == 0:
-            save_yolo_labels(os.path.join(output_dir, filename), np.array([]))
+        # NEU: Wenn 2 oder weniger Schrauben vorhanden sind, reicht es nicht für eine
+        # zuverlässige Cluster-Prognose. In diesem Fall wird die Original-Datei
+        # ohne Änderungen übernommen, da die Vorhersage fast immer falsch wäre.
+        if len(labels) <= 2:
+            save_yolo_labels(os.path.join(output_dir, filename), all_labels)
             continue
         input_data = labels[:, 1:5] # Use x,y,w,h
-        
-        if input_data.shape[0] < 2 or input_data.shape[1] < 2:
-            # Not enough points to match structure
-            if not filter_input:
-                output_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
-                save_yolo_labels(os.path.join(output_dir, filename), np.array(output_rows))
-            else:
-                save_yolo_labels(os.path.join(output_dir, filename), np.array([]))
-            continue
 
         # Use only x,y for geometric matching
         input_pts = input_data[:, :2]
@@ -174,8 +168,19 @@ def run_inference():
             
             # Decide which input points to keep
             if filter_input:
-                kept_indices = sorted(list(matched_input_indices))
-                input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data[kept_indices]]
+                num_input_bolts = input_data.shape[0]
+                num_to_remove = num_input_bolts - len(matched_input_indices)
+
+                # NEU: Sicherheitsprüfung gegen exzessives Entfernen.
+                # Wenn die Hälfte oder mehr der Schrauben entfernt werden sollen, ist das Match wahrscheinlich falsch.
+                # In diesem Fall werden keine Schrauben entfernt, um False Positives zu vermeiden.
+                if num_input_bolts > 0 and num_to_remove >= (num_input_bolts / 2):
+                    # Behalte alle ursprünglichen Schrauben
+                    input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
+                else:
+                    # Entferne die nicht gematchten Schrauben wie geplant
+                    kept_indices = sorted(list(matched_input_indices))
+                    input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data[kept_indices]]
             else:
                 input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
         
@@ -184,6 +189,15 @@ def run_inference():
                 input_rows = [[0, row[0], row[1], row[2], row[3]] for row in input_data]
         
         predicted_missing = np.array(predicted_missing)
+
+        # --- NEU: Sicherheitsprüfung gegen exzessive Ergänzungen ---
+        # Wenn mehr als 4x so viele Schrauben ergänzt wie vorhanden sind, ist es wahrscheinlich ein Fehlmatch.
+        # In diesem Fall werden keine Schrauben ergänzt.
+        num_input = input_data.shape[0]
+        num_predicted = predicted_missing.shape[0]
+        if num_input > 0 and num_predicted > (4 * num_input):
+            # print(f"  -> Warnung: Exzessive Ergänzung ({num_predicted} > 4 * {num_input}). Verwerfe Ergänzungen für {filename}.")
+            predicted_missing = np.array([])
 
         # 3. Save Result
         if len(predicted_missing) > 0:
