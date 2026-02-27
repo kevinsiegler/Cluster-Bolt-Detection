@@ -51,7 +51,7 @@ def create_subset():
     total_files = len(files)
     
     # 5% berechnen
-    subset_size = int(total_files * 0.05)
+    subset_size = int(total_files * 0.10)
     if subset_size < 1 and total_files > 0:
         subset_size = 1
         

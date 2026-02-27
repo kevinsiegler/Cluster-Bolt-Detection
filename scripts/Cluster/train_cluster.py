@@ -39,43 +39,49 @@ def train():
     # 1. Clustering
     # We use K-Means on features to group similar layouts efficiently
     n_clusters = cfg['clustering']['n_clusters']
-    if n_clusters > len(features):
-        print(f"Warning: n_clusters ({n_clusters}) > n_samples ({len(features)}). Adjusting n_clusters to {len(features)}.")
-        n_clusters = len(features)
-
-    print(f"Clustering into {n_clusters} prototypes...")
-    
-    kmeans = KMeans(n_clusters=n_clusters, random_state=cfg['clustering']['random_state'], n_init=10)
-    labels = kmeans.fit_predict(features)
-    
-    # 2. Prototype Selection (Medoids)
-    # For each cluster, find the sample that is most representative (lowest avg Chamfer distance to others in cluster)
-    # To save time, we just pick the one closest to the feature centroid, 
-    # OR we compute pairwise chamfer for the top candidates.
     
     prototypes = []
-    
-    print("Selecting Prototypes...")
-    for i in range(n_clusters):
-        indices = np.where(labels == i)[0]
-        if len(indices) == 0: continue
+
+    # Check if we want 1:1 replicas (n_clusters == -1 or >= n_samples)
+    if n_clusters == -1 or n_clusters >= len(features):
+        print("n_clusters set to -1 or >= n_samples. Using ALL training samples as prototypes (1:1 Replica).")
+        print("Skipping KMeans clustering to ensure exact ground truth preservation.")
         
-        cluster_points = [all_points[idx] for idx in indices]
+        for i in range(len(features)):
+            prototypes.append({
+                'id': i,
+                'points': all_points[i], # Exact raw points from GT
+                'count': 1,
+                'features': features[i]
+            })
+            
+    else:
+        print(f"Clustering into {n_clusters} prototypes...")
         
-        # Simple Medoid: Find sample closest to feature center
-        # (This is a heuristic approximation to avoid O(N^2) chamfer calc)
-        center = kmeans.cluster_centers_[i]
-        cluster_feats = features[indices]
-        dists = np.linalg.norm(cluster_feats - center, axis=1)
-        medoid_idx = np.argmin(dists)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=cfg['clustering']['random_state'], n_init=10)
+        labels = kmeans.fit_predict(features)
         
-        best_layout = cluster_points[medoid_idx]
-        prototypes.append({
-            'id': i,
-            'points': best_layout,
-            'count': len(indices),
-            'features': cluster_feats[medoid_idx]
-        })
+        # 2. Prototype Selection (Medoids)
+        print("Selecting Prototypes...")
+        for i in range(n_clusters):
+            indices = np.where(labels == i)[0]
+            if len(indices) == 0: continue
+            
+            cluster_points = [all_points[idx] for idx in indices]
+            
+            # Simple Medoid: Find sample closest to feature center
+            center = kmeans.cluster_centers_[i]
+            cluster_feats = features[indices]
+            dists = np.linalg.norm(cluster_feats - center, axis=1)
+            medoid_idx = np.argmin(dists)
+            
+            best_layout = cluster_points[medoid_idx]
+            prototypes.append({
+                'id': i,
+                'points': best_layout,
+                'count': len(indices),
+                'features': cluster_feats[medoid_idx]
+            })
         
     print(f"Generated {len(prototypes)} initial prototypes.")
     

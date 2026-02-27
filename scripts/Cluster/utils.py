@@ -108,3 +108,45 @@ def chamfer_distance(set_a, set_b):
     min_b_to_a = np.mean(np.min(dists, axis=0))
     
     return min_a_to_b + min_b_to_a
+
+def find_best_match(input_pts, prototypes, inlier_threshold, outlier_penalty=1.0, missing_penalty=0.01):
+    """
+    Findet den besten passenden Prototypen für die gegebenen Input-Punkte.
+    Zentralisierte Logik für Inferenz und Dashboard.
+    
+    Returns: (best_proto, best_score)
+    """
+    best_score = float('inf')
+    best_proto = None
+    
+    for proto in prototypes:
+        proto_pts = proto['points'][:, :2]
+        
+        # Ein Prototyp kann kein Match sein, wenn er weniger Punkte hat als der Input
+        if len(proto_pts) < len(input_pts):
+            continue
+            
+        # Berechne Distanzen direkt (ohne Verschiebung/Alignment)
+        dists = cdist(input_pts, proto_pts)
+        
+        # Finde den nächsten Prototyp-Punkt für jeden Input-Punkt
+        closest_proto_indices = np.argmin(dists, axis=1)
+        min_dists = dists[np.arange(len(input_pts)), closest_proto_indices]
+        
+        # Bestimme Inliers basierend auf dem Threshold
+        inlier_mask = min_dists < inlier_threshold
+        num_inliers = np.sum(inlier_mask)
+        num_outliers = len(input_pts) - num_inliers
+        inlier_dist_mean = np.mean(min_dists[inlier_mask]) if num_inliers > 0 else 0
+        
+        # Berechne Anzahl der vorhergesagten fehlenden Schrauben (Occam's Razor)
+        num_unique_matched = len(np.unique(closest_proto_indices[inlier_mask])) if num_inliers > 0 else 0
+        num_predicted_missing = len(proto_pts) - num_unique_matched
+        
+        score = (num_outliers * outlier_penalty) + inlier_dist_mean + (num_predicted_missing * missing_penalty)
+
+        if score < best_score:
+            best_score = score
+            best_proto = proto
+            
+    return best_proto, best_score

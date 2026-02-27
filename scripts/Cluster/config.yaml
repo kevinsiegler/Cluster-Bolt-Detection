@@ -19,22 +19,34 @@ preprocessing:
 
 clustering:
   # Name of the model file to save/load (without .pkl extension)
-  model_name: "6580_cluster"
+  model_name: "all_cluster"
   # Feature-based clustering is faster than pairwise point-set distance for 6500 images
-  n_clusters: 6580  # Number of prototype layouts to learn. Increase this for more variety.
+  n_clusters: -1  # Set to -1 to use ALL training samples as prototypes (1:1 replica).
   random_state: 42
   # After clustering, remove prototypes that are too similar to others (distance < threshold)
   pruning_threshold: 0
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "YOLO_run2_min_3_predictions"
-  # Threshold to consider a point "matched" (in normalized coordinates 0.0-1.0)
-  match_threshold: 0.022
+  run_name: "YOLO_run7_all_with_penalties"
+  # Strict threshold for 1:1 matching. Increased to 0.015 (~1.5%) to handle YOLO jitter better.
+  strict_spatial_threshold: 0.015
+  # Threshold to consider a point an "inlier" for robust scoring (normalized coordinates 0.0-1.0)
+  inlier_threshold: 0.04
+  # Score to accept a prototype match. Increased to 5.0 to almost ALWAYS accept the best match found.
+  # This prevents "nothing set" when the cluster is visually correct but has some outliers.
+  acceptance_threshold: 100
+  # Penalty for each predicted missing bolt (Occam's Razor).
+  missing_penalty: 20
+  # Penalty for each outlier (input point not matching cluster).
+  outlier_penalty: 1.0
+  # Maximum allowed shift of a prototype to fit input points (normalized coordinates).
+  # A value of 0.03 is roughly one bounding box size.
+  max_translation: 0.03
   # If true, aligns prototype to input using Translation + Scale. If false, Translation only.
   allow_scaling: false
   # If true, removes input points that do not match the selected prototype.
-  filter_input_points: true
+  filter_input_points: false
   # Default size for predicted boxes (width, height)
   default_box_size: [0.014, 0.025]
 

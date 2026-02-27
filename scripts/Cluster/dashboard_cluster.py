@@ -11,7 +11,7 @@ from scipy.spatial.distance import cdist
 # --- Pfad-Management, um Importe zu ermöglichen ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR)) # Fügt das übergeordnete 'scripts'-Verzeichnis hinzu
-from Cluster.utils import load_config, load_yolo_labels
+from Cluster.utils import load_config, load_yolo_labels, find_best_match
 
 # --- Hilfsfunktionen ---
 
@@ -172,30 +172,43 @@ def compute_visualization_data(image_id, cfg, prototypes):
     pred_kept_bolts = pred_labels[pred_labels[:, 0] == 0][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
     pred_missing_bolts = pred_labels[pred_labels[:, 0] == 1][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
 
-    # --- Berechne das Alignment für das mittlere Panel ---
-    # WICHTIG: Verwende hier die `inference_input_data`, um den Inferenz-Prozess exakt nachzubilden
+    # --- Berechne das Alignment für das mittlere Panel (Panel 2) ---
+    # Diese Logik muss exakt die aus `inference.py` nachbilden, um das korrekte Prototyp-Matching zu visualisieren.
+    
+    # Lade ALLE YOLO-Labels (Klasse 0 und 1), da beide für das Matching verwendet werden
+    pts_0 = all_inference_input_labels[all_inference_input_labels[:, 0] == 0] if len(all_inference_input_labels) > 0 else np.empty((0, 5))
+    pts_1 = all_inference_input_labels[all_inference_input_labels[:, 0] == 1] if len(all_inference_input_labels) > 0 else np.empty((0, 5))
+
+    # Bereite die Match-Punkte und deren Gewichtung vor (wie in inference.py)
+    match_pts_list = []
+    if len(pts_0) > 0:
+        match_pts_list.append(pts_0[:, 1:3])
+    if len(pts_1) > 0:
+        match_pts_list.append(pts_1[:, 1:3])
+        
+    if match_pts_list:
+        input_pts_xy = np.vstack(match_pts_list)
+    else:
+        input_pts_xy = np.empty((0, 2))
+
     best_score = float('inf')
+    best_proto_for_vis = None
     best_aligned_proto_xy = None
-    if inference_input_data.shape[0] >= 2:
-        input_pts_xy = inference_input_data[:, :2]
-        for proto in prototypes:
-            proto_pts_xy = proto['points'][:, :2]
-            if len(proto_pts_xy) < len(input_pts_xy): continue
-            
-            current_proto_best_score = float('inf')
-            current_proto_best_aligned = None
-            for i in range(len(input_pts_xy)):
-                for j in range(len(proto_pts_xy)):
-                    t = input_pts_xy[i] - proto_pts_xy[j]
-                    candidate_proto = proto_pts_xy + t
-                    score = np.mean(np.min(cdist(input_pts_xy, candidate_proto), axis=1))
-                    if score < current_proto_best_score:
-                        current_proto_best_score = score
-                        current_proto_best_aligned = candidate_proto
-            
-            if current_proto_best_score < best_score:
-                best_score = current_proto_best_score
-                best_aligned_proto_xy = current_proto_best_aligned
+    inlier_thresh = cfg['inference'].get('inlier_threshold', 0.022)
+    acceptance_threshold = cfg['inference'].get('acceptance_threshold', 1.5)
+
+    if input_pts_xy.shape[0] > 0:
+        missing_penalty = cfg['inference'].get('missing_penalty', 0.01)
+        outlier_penalty = cfg['inference'].get('outlier_penalty', 1.0)
+        best_proto_for_vis, best_score = find_best_match(
+            input_pts_xy, prototypes, inlier_thresh, outlier_penalty=outlier_penalty, missing_penalty=missing_penalty
+        )
+    
+    # --- NO ALIGNMENT ---
+    # To be consistent with the new inference logic, we do not perform any alignment.
+    # The "aligned" prototype for visualization is the original, untransformed prototype.
+    if best_proto_for_vis is not None:
+        best_aligned_proto_xy = best_proto_for_vis['points'][:, :2]
     
     # --- Sortiere alle Boxen in die neuen Kategorien für die Visualisierung ---
     dist_thresh = cfg['evaluation']['dist_threshold']
@@ -277,6 +290,8 @@ def compute_visualization_data(image_id, cfg, prototypes):
         "fp_pure": np.array(fp_pure),
         "fp_on_existing": np.array(fp_on_existing),
         "fn_missing": np.array(fn_missing),
+        "match_score": best_score,
+        "acceptance_threshold": acceptance_threshold
     }
 
 # --- Streamlit UI ---
@@ -474,6 +489,16 @@ else:
                 p2 = (int(proto_pt[0] * w), int(proto_pt[1] * h))
                 cv2.line(img2, p1, p2, COLOR_ALIGN_LINE, base_thickness, cv2.LINE_AA)
         cv2.putText(img2, "2. Alignment", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
+        
+        # Zeige Score und Status an
+        score = vis_data.get("match_score", float('inf'))
+        thresh = vis_data.get("acceptance_threshold", 0)
+        is_accepted = score < thresh
+        status_color = (0, 255, 0) if is_accepted else (0, 0, 255) # Grün wenn akzeptiert, Rot wenn abgelehnt
+        status_text = "AKZEPTIERT" if is_accepted else "ABGELEHNT (Score zu hoch)"
+        
+        cv2.putText(img2, f"Score: {score:.4f} (Limit: {thresh})", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+        cv2.putText(img2, f"Status: {status_text}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
 
         # Panel 3: Prognose
         img3 = image.copy()
@@ -497,8 +522,8 @@ else:
         # Zeige die Bilder in drei Spalten an, um die Auflösung zu erhalten
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.image(img1, channels="BGR", use_container_width=True)
+            st.image(img1, channels="BGR", width='stretch')
         with col2:
-            st.image(img2, channels="BGR", use_container_width=True)
+            st.image(img2, channels="BGR", width='stretch')
         with col3:
-            st.image(img3, channels="BGR", use_container_width=True)
+            st.image(img3, channels="BGR", width='stretch')
