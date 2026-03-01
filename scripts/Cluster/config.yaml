@@ -7,8 +7,10 @@ paths:
   train_labels: "C:\\Users\\Kevin\\Clustererkennung\\bolt_detection\\dataset\\all_labels"
   val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
   # Input directory for inference run
-  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels"
-  # Output Directories (Scripts will create subfolders here)
+  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels_subset3"
+  #inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
+  
+# Output Directories (Scripts will create subfolders here)
   output_root: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/Cluster/Outputs"
   # Where to save/load the learned prototypes
   model_dir: "models"
@@ -19,7 +21,7 @@ preprocessing:
 
 clustering:
   # Name of the model file to save/load (without .pkl extension)
-  model_name: "all_cluster"
+  model_name: "5215_cluster"
   # Feature-based clustering is faster than pairwise point-set distance for 6500 images
   n_clusters: -1  # Set to -1 to use ALL training samples as prototypes (1:1 replica).
   random_state: 42
@@ -28,25 +30,27 @@ clustering:
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "YOLO_run7_all_with_penalties"
+  run_name: "YOLO_with_scaling_run2"
   # Strict threshold for 1:1 matching. Increased to 0.015 (~1.5%) to handle YOLO jitter better.
-  strict_spatial_threshold: 0.015
+  strict_spatial_threshold: 0.05
   # Threshold to consider a point an "inlier" for robust scoring (normalized coordinates 0.0-1.0)
-  inlier_threshold: 0.04
+  inlier_threshold: 0.005
   # Score to accept a prototype match. Increased to 5.0 to almost ALWAYS accept the best match found.
   # This prevents "nothing set" when the cluster is visually correct but has some outliers.
-  acceptance_threshold: 100
+  acceptance_threshold: 1000.0
   # Penalty for each predicted missing bolt (Occam's Razor).
-  missing_penalty: 20
+  missing_penalty: 10.0
   # Penalty for each outlier (input point not matching cluster).
-  outlier_penalty: 1.0
+  outlier_penalty: 10.0
+
+
   # Maximum allowed shift of a prototype to fit input points (normalized coordinates).
   # A value of 0.03 is roughly one bounding box size.
-  max_translation: 0.03
+  max_translation: 0.0
   # If true, aligns prototype to input using Translation + Scale. If false, Translation only.
   allow_scaling: false
   # If true, removes input points that do not match the selected prototype.
-  filter_input_points: false
+  filter_input_points: True
   # Default size for predicted boxes (width, height)
   default_box_size: [0.014, 0.025]
 

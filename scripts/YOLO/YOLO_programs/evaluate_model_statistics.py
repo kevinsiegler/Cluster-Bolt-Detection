@@ -61,7 +61,13 @@ def bbox_iou(box1, box2):
     return inter_area / union_area
 
 
-def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
+def calc_center_distance(box1, box2):
+    """Berechnet die Distanz zwischen den Mittelpunkten zweier Boxen (für Cluster-Logik)."""
+    # box: [class, x, y, w, h] -> wir nutzen x(1), y(2)
+    return np.linalg.norm(np.array(box1[1:3]) - np.array(box2[1:3]))
+
+
+def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5, dist_threshold=0.025):
     """
     Vergleicht Ground Truth Boxen mit Predictions.
     Liefert ein DataFrame mit Details pro Box:
@@ -77,44 +83,82 @@ def evaluate_model(gt_dir, pred_dir, iou_threshold=0.5):
 
     for img_name, gt_boxes in gt_labels.items():
         pred_boxes = pred_labels.get(img_name, np.array([]))
-        matched_pred_indices = set()
-
-        for gt_box in gt_boxes:
+        
+        # Tracking Arrays für Matches
+        gt_matched = np.zeros(len(gt_boxes), dtype=bool)
+        pred_matched = np.zeros(len(pred_boxes), dtype=bool)
+        
+        # Helper Funktion für Matching
+        def find_best_match_for_gt(gt_idx, same_class_only=False):
+            gt_box = gt_boxes[gt_idx]
             gt_class = int(gt_box[0])
-            best_iou = 0
+            
+            best_iou_val = -1
+            best_dist_val = float('inf')
             best_pred_idx = -1
-
+            
             for i, pred_box in enumerate(pred_boxes):
-                if i in matched_pred_indices:
-                    continue
+                if pred_matched[i]: continue # Bereits vergeben
+                
+                pred_class = int(pred_box[0])
+                if same_class_only and pred_class != gt_class: continue
+                
                 iou = bbox_iou(gt_box[1:], pred_box[1:])
-                if iou > best_iou:
-                    best_iou = iou
-                    best_pred_idx = i
+                dist = calc_center_distance(gt_box, pred_box)
+                
+                # Priorität 1: IoU Match
+                if iou >= iou_threshold:
+                    if iou > best_iou_val:
+                        best_iou_val = iou
+                        best_pred_idx = i
+                # Priorität 2: Distanz Match (Fallback)
+                elif best_iou_val == -1 and dist <= dist_threshold:
+                    if dist < best_dist_val:
+                        best_dist_val = dist
+                        best_pred_idx = i
+            return best_pred_idx
 
-            if best_iou >= iou_threshold and best_pred_idx != -1:
-                pred_class = int(pred_boxes[best_pred_idx][0])
-                matched_pred_indices.add(best_pred_idx)
-                correct = gt_class == pred_class
+        # PASS 1: Match SAME CLASS (Priorität wie in evaluate.py)
+        for i in range(len(gt_boxes)):
+            best_pred_idx = find_best_match_for_gt(i, same_class_only=True)
+            if best_pred_idx != -1:
+                gt_matched[i] = True
+                pred_matched[best_pred_idx] = True
                 stats.append({
                     "image": img_name,
-                    "iou": best_iou,
-                    "gt_class": gt_class,
-                    "pred_class": pred_class,
-                    "match": correct
-                })
-            else:
-                stats.append({
-                    "image": img_name,
-                    "iou": 0,
-                    "gt_class": gt_class,
-                    "pred_class": None,
-                    "match": False
+                    "iou": bbox_iou(gt_boxes[i][1:], pred_boxes[best_pred_idx][1:]),
+                    "gt_class": int(gt_boxes[i][0]),
+                    "pred_class": int(pred_boxes[best_pred_idx][0]),
+                    "match": True
                 })
 
-        # Vorhersagen ohne zugeordnetes GT
+        # PASS 2: Match ANY CLASS (Falsch klassifiziert)
+        for i in range(len(gt_boxes)):
+            if not gt_matched[i]:
+                best_pred_idx = find_best_match_for_gt(i, same_class_only=False)
+                if best_pred_idx != -1:
+                    gt_matched[i] = True
+                    pred_matched[best_pred_idx] = True
+                    stats.append({
+                        "image": img_name,
+                        "iou": bbox_iou(gt_boxes[i][1:], pred_boxes[best_pred_idx][1:]),
+                        "gt_class": int(gt_boxes[i][0]),
+                        "pred_class": int(pred_boxes[best_pred_idx][0]),
+                        "match": False # Wrong Class
+                    })
+                else:
+                    # Missed (FN)
+                    stats.append({
+                        "image": img_name,
+                        "iou": 0,
+                        "gt_class": int(gt_boxes[i][0]),
+                        "pred_class": None,
+                        "match": False
+                    })
+
+        # Vorhersagen ohne zugeordnetes GT (FP)
         for j, pred_box in enumerate(pred_boxes):
-            if j not in matched_pred_indices:
+            if not pred_matched[j]:
                 stats.append({
                     "image": img_name,
                     "iou": 0,
@@ -225,7 +269,8 @@ for i, eval_name in enumerate(available_evals):
                 fp_total += len(fp_c)
 
             # --- Berechnungen intern immer genau ---
-            precision = tp_total / (tp_total + wrong_total + fp_total) if (tp_total + wrong_total + fp_total) > 0 else 0
+            # Precision = TP / (TP + FP). Wrong Class (GT perspective) gehört NICHT in den Nenner der Precision.
+            precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0
             recall = tp_total / (tp_total + wrong_total + missed_total) if (tp_total + wrong_total + missed_total) > 0 else 0
             f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
             mean_iou = df["iou"].mean()
@@ -268,7 +313,7 @@ for i, eval_name in enumerate(available_evals):
                 fp_val = len(false_positive_c)
 
                 # --- Berechnungen intern genau ---
-                precision_c = tp_val / (tp_val + wrong_val + fp_val) if (tp_val + wrong_val + fp_val) > 0 else 0
+                precision_c = tp_val / (tp_val + fp_val) if (tp_val + fp_val) > 0 else 0
                 recall_c = tp_val / (tp_val + wrong_val + missed_val) if (tp_val + wrong_val + missed_val) > 0 else 0
                 f1_c = 2 * (precision_c * recall_c) / (precision_c + recall_c + 1e-8)
                 missed_percent = (missed_val / len(gt_class_df) * 100) if len(gt_class_df) > 0 else 0

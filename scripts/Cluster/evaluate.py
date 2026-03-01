@@ -84,10 +84,6 @@ def evaluate():
         if n_gt == 0 and n_pred == 0:
             continue
             
-        if n_gt == 0:
-            fp_total += n_pred
-            continue
-            
         if n_pred == 0:
             fn_total += n_gt
             # Check if these FNs were caused by YOLO false positives

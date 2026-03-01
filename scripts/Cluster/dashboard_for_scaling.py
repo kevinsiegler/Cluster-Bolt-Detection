@@ -8,10 +8,57 @@ import pickle
 import random
 from scipy.spatial.distance import cdist
 
-# --- Pfad-Management, um Importe zu ermöglichen ---
+# --- Pfad-Management ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.dirname(SCRIPT_DIR)) # Fügt das übergeordnete 'scripts'-Verzeichnis hinzu
-from Cluster.utils import load_config, load_yolo_labels, find_best_match
+sys.path.append(os.path.dirname(SCRIPT_DIR)) 
+from Cluster.utils import load_config, load_yolo_labels
+
+# --- LOKALE KOPIE DER MATCHING-LOGIK FÜR SCALING ---
+def find_best_match_with_scaling_vis(input_pts, prototypes, inlier_threshold, outlier_penalty=0.6, missing_penalty=0.4, input_weights=None):
+    """
+    Lokale Version für das Dashboard (Exhaustive Matching).
+    """
+    best_score = float('inf')
+    best_proto = None
+    best_aligned_proto = None
+
+    # Gewichtung muss exakt der Inferenz entsprechen!
+    if input_weights is None:
+        input_weights = np.ones(len(input_pts))
+    
+    scales = np.arange(0.85, 1.16, 0.05)
+
+    # Gleiche Brute-Force Logik wie in der Inferenz
+    for proto in prototypes:
+        proto_pts = proto['points'][:, :2]
+        
+        for p_idx, p_anchor in enumerate(proto_pts):
+            for i_idx, i_anchor in enumerate(input_pts):
+                for s in scales:
+                    aligned_proto = (proto_pts - p_anchor) * s + i_anchor
+                    
+                    dists = cdist(input_pts, aligned_proto)
+                    closest_proto_indices = np.argmin(dists, axis=1)
+                    min_dists = dists[np.arange(len(input_pts)), closest_proto_indices]
+                    
+                    inlier_mask = min_dists < inlier_threshold
+                    outlier_mask = ~inlier_mask
+                    
+                    outlier_score = np.sum(input_weights[outlier_mask]) * outlier_penalty
+                    num_inliers = np.sum(inlier_mask)
+                    inlier_dist_mean = np.mean(min_dists[inlier_mask]) if num_inliers > 0 else 0
+                    
+                    num_unique_matched = len(np.unique(closest_proto_indices[inlier_mask])) if num_inliers > 0 else 0
+                    num_predicted_missing = len(proto_pts) - num_unique_matched
+                    
+                    score = outlier_score + inlier_dist_mean + (num_predicted_missing * missing_penalty)
+
+                    if score < best_score:
+                        best_score = score
+                        best_proto = proto
+                        best_aligned_proto = aligned_proto
+            
+    return best_proto, best_score, best_aligned_proto
 
 # --- Hilfsfunktionen ---
 
@@ -35,7 +82,7 @@ def draw_boxes(image, boxes, color, thickness):
         cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
     return image
 
-@st.cache_data(show_spinner="Lade und bewerte Inferenz-Ergebnisse...", ttl=600)
+@st.cache_data(show_spinner="Lade und bewerte SCALED Inferenz-Ergebnisse...", ttl=600)
 def load_and_evaluate_all_data():
     """
     Lädt die Ergebnisse eines abgeschlossenen Inferenz-Laufs und evaluiert sie.
@@ -45,14 +92,15 @@ def load_and_evaluate_all_data():
     cfg = load_config(os.path.join(SCRIPT_DIR, "config.yaml"))
     
     # --- Pfade ---
-    run_name = cfg['inference']['run_name']
+    # WICHTIG: Wir nutzen hier den _scaled Ordner
+    run_name = cfg['inference'].get('run_name', 'default_run')
     pred_dir = os.path.join(cfg['paths']['output_root'], "inference", run_name)
     val_input_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_input")
     val_gt_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_gt")
     inference_input_dir = cfg['paths']['inference_input_dir']
     
     if not os.path.isdir(pred_dir):
-        st.error(f"Inferenz-Verzeichnis nicht gefunden: `{pred_dir}`. Bitte führen Sie zuerst `inference.py` aus.")
+        st.error(f"Inferenz-Verzeichnis nicht gefunden: `{pred_dir}`. Bitte führen Sie zuerst `inference_with_scaling.py` aus.")
         return []
 
     # --- Lade alle relevanten Dateien ---
@@ -93,14 +141,17 @@ def load_and_evaluate_all_data():
         
         # 1. Entfernte Schrauben (Gelb)
         # Hier vergleichen wir YOLO-Input (inf_input_data) mit dem Output (pred_kept_bolts)
+        # HINWEIS: Bei Scaling ist filter_input=False hardcoded, aber wir prüfen es trotzdem generisch
         count_removed = 0
-        if cfg['inference'].get('filter_input_points', False) and inf_input_data.shape[0] > 0:
-            if pred_kept_bolts.shape[0] > 0:
-                dists = cdist(inf_input_data[:, :2], pred_kept_bolts[:, :2])
-                min_dists_to_kept = np.min(dists, axis=1)
-                count_removed = int(np.sum(min_dists_to_kept > dist_thresh))
-            else:
-                count_removed = inf_input_data.shape[0]
+        # Da filter_input=False erzwungen ist, ignorieren wir entfernte Schrauben im Dashboard,
+        # es sei denn, sie fehlen wirklich im Output (was nicht passieren sollte).
+        if inf_input_data.shape[0] > 0 and pred_kept_bolts.shape[0] > 0:
+             dists = cdist(inf_input_data[:, :2], pred_kept_bolts[:, :2])
+             min_dists_to_kept = np.min(dists, axis=1)
+             # Nur zählen, wenn wirklich signifikant weg (Fehler im Skript?), sonst 0 annehmen
+             real_removed = np.sum(min_dists_to_kept > dist_thresh)
+             if real_removed > 0:
+                 count_removed = int(real_removed)
 
         # 2. Evaluiere die Prognosen für fehlende Schrauben
         matched_gt_missing_indices = set()
@@ -174,7 +225,10 @@ def compute_visualization_data(image_id, cfg, prototypes):
     """Berechnet die Visualisierungsdaten für ein einzelnes Bild bei Bedarf."""
     val_input_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_input")
     val_gt_dir = os.path.join(cfg['paths']['output_root'], "preprocessing", "val_gt")
-    pred_dir = os.path.join(cfg['paths']['output_root'], "inference", cfg['inference']['run_name'])
+    
+    # WICHTIG: _scaled Ordner
+    run_name = cfg['inference'].get('run_name', 'default_run') + "_scaled"
+    pred_dir = os.path.join(cfg['paths']['output_root'], "inference", run_name)
     inference_input_dir = cfg['paths']['inference_input_dir']
 
     # Lade Ground-Truth Daten für die finale Auswertung (Panel 3)
@@ -198,60 +252,55 @@ def compute_visualization_data(image_id, cfg, prototypes):
     pred_missing_bolts = pred_labels[pred_labels[:, 0] == 1][:, 1:5] if len(pred_labels) > 0 else np.empty((0, 4))
 
     # --- Berechne das Alignment für das mittlere Panel (Panel 2) ---
-    # Diese Logik muss exakt die aus `inference.py` nachbilden, um das korrekte Prototyp-Matching zu visualisieren.
+    # Diese Logik muss exakt die aus `inference_with_scaling.py` nachbilden.
     
     # Lade ALLE YOLO-Labels (Klasse 0 und 1), da beide für das Matching verwendet werden
     pts_0 = all_inference_input_labels[all_inference_input_labels[:, 0] == 0] if len(all_inference_input_labels) > 0 else np.empty((0, 5))
     pts_1 = all_inference_input_labels[all_inference_input_labels[:, 0] == 1] if len(all_inference_input_labels) > 0 else np.empty((0, 5))
 
-    # Bereite die Match-Punkte und deren Gewichtung vor (wie in inference.py)
+    # Bereite die Match-Punkte und deren Gewichtung vor (wie in inference_with_scaling.py)
     match_pts_list = []
+    match_weights_list = []
+    
     if len(pts_0) > 0:
         match_pts_list.append(pts_0[:, 1:3])
+        match_weights_list.append(np.ones(len(pts_0)) * 1.0)
     if len(pts_1) > 0:
         match_pts_list.append(pts_1[:, 1:3])
+        match_weights_list.append(np.ones(len(pts_1)) * 0.3) # WICHTIG: 0.3 Gewichtung wie in Inferenz
         
     if match_pts_list:
         input_pts_xy = np.vstack(match_pts_list)
+        input_weights = np.hstack(match_weights_list)
     else:
         input_pts_xy = np.empty((0, 2))
+        input_weights = np.array([])
 
     best_score = float('inf')
     best_proto_for_vis = None
     best_aligned_proto_xy = None
-    inlier_thresh = cfg['inference'].get('inlier_threshold', 0.022)
-    acceptance_threshold = cfg['inference'].get('acceptance_threshold', 1.5)
+    
+    # HARDCODED PARAMETERS FROM inference_with_scaling.py
+    inlier_thresh = 0.08   # Angepasst an Inferenz
+    acceptance_threshold = 9999.0
+    missing_penalty = 0.4
+    outlier_pen = 0.6
 
     if input_pts_xy.shape[0] > 0:
-        missing_penalty = cfg['inference'].get('missing_penalty', 0.01)
-        outlier_penalty = cfg['inference'].get('outlier_penalty', 1.0)
-        best_proto_for_vis, best_score = find_best_match(
-            input_pts_xy, prototypes, inlier_thresh, outlier_penalty=outlier_penalty, missing_penalty=missing_penalty
+        best_proto_for_vis, best_score, best_aligned_proto_xy = find_best_match_with_scaling_vis(
+            input_pts_xy, prototypes, inlier_thresh, outlier_penalty=outlier_pen, missing_penalty=missing_penalty, input_weights=input_weights
         )
-    
-    # --- NO ALIGNMENT ---
-    # To be consistent with the new inference logic, we do not perform any alignment.
-    # The "aligned" prototype for visualization is the original, untransformed prototype.
-    if best_proto_for_vis is not None:
-        best_aligned_proto_xy = best_proto_for_vis['points'][:, :2]
     
     # --- Sortiere alle Boxen in die neuen Kategorien für die Visualisierung ---
     dist_thresh = cfg['evaluation']['dist_threshold']
     
     # Kategorie: Behaltene vs. entfernte Input-Schrauben
-    # Hier wird der YOLO-Input (inference_input_data) mit dem finalen Output verglichen
     kept_input_bolts, removed_input_bolts = [], []
-    if cfg['inference'].get('filter_input_points', False) and inference_input_data.shape[0] > 0:
-        if pred_kept_bolts.shape[0] > 0:
-            dists = cdist(inference_input_data[:, :2], pred_kept_bolts[:, :2])
-            matched_input_indices = set(np.argmin(dists, axis=0))
-            for i in range(inference_input_data.shape[0]):
-                if i in matched_input_indices: kept_input_bolts.append(inference_input_data[i])
-                else: removed_input_bolts.append(inference_input_data[i])
-        else:
-            removed_input_bolts = list(inference_input_data)
-    else:
-        kept_input_bolts = list(inference_input_data)
+    # Bei Scaling ist filter_input=False, also sollten alle behalten werden.
+    # Wir prüfen trotzdem gegen den Output.
+    # Da wir wissen, dass filter_input=False ist, setzen wir kept=input.
+    kept_input_bolts = list(inference_input_data)
+    removed_input_bolts = [] 
 
     # Unterteile 'kept_input_bolts' in 'normal' und 'masking' (Verdeckte Fehler)
     normal_kept_bolts = []
@@ -288,10 +337,10 @@ def compute_visualization_data(image_id, cfg, prototypes):
             fp_kept_bolts = list(normal_kept_bolts)
 
     # Kategorien für fehlende Schrauben
-    tp_missing, fp_on_existing, fp_pure, fn_missing = [], [], [], [] # fp_on_existing hinzugefügt
+    tp_missing, fp_on_existing, fp_pure, fn_missing = [], [], [], [] 
     matched_gt_missing_indices, matched_pred_missing_indices = set(), set()
 
-    # Pass 1: Finde TPs (Grün) - Angleichung an evaluate.py
+    # Pass 1: Finde TPs (Grün)
     if gt_missing_data.shape[0] > 0 and pred_missing_bolts.shape[0] > 0:
         dists = cdist(gt_missing_data[:,:2], pred_missing_bolts[:,:2])
         for i in range(gt_missing_data.shape[0]):
@@ -299,7 +348,6 @@ def compute_visualization_data(image_id, cfg, prototypes):
             min_dist = dists[i, best_pred_idx]
             
             if min_dist < dist_thresh and best_pred_idx not in matched_pred_missing_indices:
-                # TP gefunden
                 tp_missing.append(pred_missing_bolts[best_pred_idx])
                 matched_pred_missing_indices.add(best_pred_idx)
                 matched_gt_missing_indices.add(i)
@@ -308,9 +356,7 @@ def compute_visualization_data(image_id, cfg, prototypes):
     for i in range(pred_missing_bolts.shape[0]):
         if i not in matched_pred_missing_indices:
             is_fp_on_existing = False
-            # gt_input_data sind die tatsächlich vorhandenen Schrauben
             if gt_input_data.shape[0] > 0:
-                # Prüfe Abstand zu allen GT-vorhandenen Schrauben
                 dists_to_gt_input = cdist(pred_missing_bolts[i:i+1, :2], gt_input_data[:, :2])
                 if np.min(dists_to_gt_input) < dist_thresh:
                     fp_on_existing.append(pred_missing_bolts[i])
@@ -325,7 +371,7 @@ def compute_visualization_data(image_id, cfg, prototypes):
             fn_missing.append(gt_missing_data[i])
 
     return {
-        "input_data": inference_input_data, # Gib die Inferenz-Daten für Panel 1 zurück
+        "input_data": inference_input_data, 
         "yolo_missing_data": yolo_missing_data,
         "best_aligned_proto_xy": best_aligned_proto_xy,
         "correct_kept_bolts": np.array(correct_kept_bolts),
@@ -343,7 +389,7 @@ def compute_visualization_data(image_id, cfg, prototypes):
 # --- Streamlit UI ---
 
 st.set_page_config(layout="wide")
-st.title("Cluster-Vervollständigung: Analyse-Dashboard")
+st.title("Cluster-Vervollständigung: Analyse-Dashboard (SCALED)")
 
 # --- Sidebar für Steuerung ---
 st.sidebar.header("Einstellungen")
@@ -354,7 +400,7 @@ legend_html = """
 <div style="display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px;">
     <div style="display: flex; align-items: center;">
         <div style="width: 12px; height: 12px; background-color: rgb(255, 0, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
-        <span>Cluster-Prognose</span>
+        <span>Cluster-Prognose (Skaliert)</span>
     </div>
     <div style="display: flex; align-items: center;">
         <div style="width: 12px; height: 12px; background-color: rgb(0, 150, 255); margin-right: 5px; border: 1px solid #ccc;"></div>
@@ -365,7 +411,7 @@ legend_html = """
         <span>Fehlend</span>
     </div>
     <div style="display: flex; align-items: center;">
-        <div style="width: 12px; height: 12px; background-color: rgb(0, 255, 0); margin-right: 5px; border: 1px solid #ccc;"></div>
+        <div style="width: 12px; height: 12px; background-color: rgb(0, 255, 0); margin-right: 5px;"></div>
         <span>Korrekt</span>
     </div>
     <div style="display: flex; align-items: center;">
@@ -501,7 +547,7 @@ else:
 
     # --- Hauptanzeige ---
     st.header(f"Zufällige Beispiele für: '{filter_option}'")
-
+    
     for res in selected_results:
         image_id = res["image_id"]
         
@@ -543,18 +589,18 @@ else:
 
         COLOR_ALIGN_LINE = (0, 255, 0)
         COLOR_TEXT = (255, 255, 255)
-
+        
         # Panel 1: Input
         img1 = image.copy()
         draw_boxes(img1, vis_data["input_data"][:, :4], COLOR_INPUT, base_thickness + 1)
         if vis_data["yolo_missing_data"].shape[0] > 0:
             draw_boxes(img1, vis_data["yolo_missing_data"][:, :4], COLOR_YOLO_MISSING, base_thickness + 1)
         cv2.putText(img1, "1. Input (YOLO)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
-
+        
         # Panel 2: Alignment
         img2 = image.copy()
         if vis_data["best_aligned_proto_xy"] is not None:
-            # Berechne Boxen für den Prototyp basierend auf der Durchschnittsgröße des Inputs
+            # Box-Größe schätzen (Durchschnitt Input)
             avg_w = np.mean(vis_data["input_data"][:, 2]) if vis_data["input_data"].shape[0] > 0 else 0.014
             avg_h = np.mean(vis_data["input_data"][:, 3]) if vis_data["input_data"].shape[0] > 0 else 0.025
             proto_boxes = np.hstack([vis_data["best_aligned_proto_xy"], np.full((vis_data["best_aligned_proto_xy"].shape[0], 2), [avg_w, avg_h])])
@@ -564,14 +610,23 @@ else:
             draw_boxes(img2, vis_data["yolo_missing_data"][:, :4], COLOR_YOLO_MISSING, base_thickness + 1)
         if vis_data["best_aligned_proto_xy"] is not None:
             h, w = img2.shape[:2]
-            dists_align = cdist(vis_data["input_data"][:, :2], vis_data["best_aligned_proto_xy"])
-            for i, input_pt in enumerate(vis_data["input_data"][:, :2]):
-                match_idx = np.argmin(dists_align[i])
-                proto_pt = vis_data["best_aligned_proto_xy"][match_idx]
-                p1 = (int(input_pt[0] * w), int(input_pt[1] * h))
-                p2 = (int(proto_pt[0] * w), int(proto_pt[1] * h))
-                cv2.line(img2, p1, p2, COLOR_ALIGN_LINE, base_thickness, cv2.LINE_AA)
-        cv2.putText(img2, "2. Alignment", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
+            # Input Punkte (kombiniert)
+            inp_pts = []
+            if len(vis_data['input_data']) > 0: inp_pts.append(vis_data['input_data'][:, :2])
+            if len(vis_data['yolo_missing_data']) > 0: inp_pts.append(vis_data['yolo_missing_data'][:, :2])
+            
+            if inp_pts:
+                inp_xy = np.vstack(inp_pts)
+                dists_align = cdist(inp_xy, vis_data["best_aligned_proto_xy"])
+                for i, pt in enumerate(inp_xy):
+                    match_idx = np.argmin(dists_align[i])
+                    # Nur zeichnen wenn nah genug (Inlier)
+                    if dists_align[i, match_idx] < 0.05:
+                        proto_pt = vis_data["best_aligned_proto_xy"][match_idx]
+                        p1 = (int(pt[0]*w), int(pt[1]*h))
+                        p2 = (int(proto_pt[0]*w), int(proto_pt[1]*h))
+                        cv2.line(img2, p1, p2, COLOR_ALIGN_LINE, base_thickness, cv2.LINE_AA)
+        cv2.putText(img2, "2. Scaled Alignment", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
         
         # Zeige Score und Status an
         score = vis_data.get("match_score", float('inf'))
@@ -586,19 +641,21 @@ else:
         # Panel 3: Prognose
         img3 = image.copy()
         # Zeichne alle Boxen in der richtigen Reihenfolge für gute Sichtbarkeit
+        # 1. Hintergrund: Vorhandene / Behaltene
         if vis_data["correct_kept_bolts"].shape[0] > 0:
             draw_boxes(img3, vis_data["correct_kept_bolts"], COLOR_INPUT, base_thickness + 1)
         if vis_data["fp_kept_bolts"].shape[0] > 0:
-            if filter_option == "Fall 6: Falsche vorhandene verblieben (FP Class 0)":
-                draw_boxes(img3, vis_data["fp_kept_bolts"], COLOR_FP_KEPT, base_thickness + 2)
-            else:
-                draw_boxes(img3, vis_data["fp_kept_bolts"], COLOR_INPUT, base_thickness + 1)
+            color_fp_kept = COLOR_FP_KEPT if filter_option == "Fall 6: Falsche vorhandene verblieben (FP Class 0)" else COLOR_INPUT
+            draw_boxes(img3, vis_data["fp_kept_bolts"], color_fp_kept, base_thickness + 1)
+            
         if vis_data["removed_input_bolts"].shape[0] > 0:
             draw_boxes(img3, vis_data["removed_input_bolts"], COLOR_REMOVED_FP, base_thickness + 2)
         if vis_data["masking_kept_bolts"].shape[0] > 0:
             draw_boxes(img3, vis_data["masking_kept_bolts"], COLOR_MASKING_FP, base_thickness + 2)
         if vis_data["fn_missing"].shape[0] > 0:
             draw_boxes(img3, vis_data["fn_missing"], COLOR_FN_MISSING, base_thickness + 2)
+            
+        # 2. Vordergrund: Ergänzte Schrauben (damit man sie sieht!)
         if vis_data["fp_pure"].shape[0] > 0:
             draw_boxes(img3, vis_data["fp_pure"], COLOR_FP_PURE, base_thickness + 2)
         if vis_data["fp_on_existing"].shape[0] > 0:
@@ -606,7 +663,7 @@ else:
         if vis_data["tp_missing"].shape[0] > 0:
             draw_boxes(img3, vis_data["tp_missing"], COLOR_TP_MISSING, base_thickness + 2)
         cv2.putText(img3, "3. Auswertung", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_TEXT, 3)
-
+        
         # Zeige die Bilder in drei Spalten an, um die Auflösung zu erhalten
         col1, col2, col3 = st.columns(3)
         with col1:

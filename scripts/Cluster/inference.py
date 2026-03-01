@@ -61,7 +61,7 @@ def run_inference():
             
         if len(pts_1) > 0:
             match_pts_list.append(pts_1[:, 1:3]) # x,y
-            match_weights_list.append(np.ones(len(pts_1)) * 1.0) # Equal weight for missing bolts
+            match_weights_list.append(np.ones(len(pts_1)) * 0.5) # 0.5 outlier penalty for missing bolts
             
         if match_pts_list:
             match_pts = np.vstack(match_pts_list)
@@ -84,7 +84,7 @@ def run_inference():
         missing_penalty = cfg['inference'].get('missing_penalty', 0.01)
         outlier_penalty = cfg['inference'].get('outlier_penalty', 1.0)
         best_proto, best_score = find_best_match(
-            input_pts, prototypes, inlier_threshold, outlier_penalty=outlier_penalty, missing_penalty=missing_penalty
+            input_pts, prototypes, inlier_threshold, outlier_penalty=outlier_penalty, missing_penalty=missing_penalty, input_weights=match_weights
         )
 
         # --- ACCEPTANCE SCORE CALCULATION (NO ALIGNMENT) ---
@@ -108,7 +108,7 @@ def run_inference():
         # A good match should have an average error significantly smaller than the individual point match_threshold.
         # We use `acceptance_threshold` to gate this.
         # Ensure threshold is large enough to cover "1% IoU" cases (approx 0.05 normalized)
-        missing_detection_thresh = max(inlier_threshold * 2.0, 0.05) 
+        missing_detection_thresh = inlier_threshold*3
 
         input_rows = []
         # FIX: Use the new acceptance_threshold to decide if the match is good enough

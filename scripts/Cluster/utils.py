@@ -109,7 +109,7 @@ def chamfer_distance(set_a, set_b):
     
     return min_a_to_b + min_b_to_a
 
-def find_best_match(input_pts, prototypes, inlier_threshold, outlier_penalty=1.0, missing_penalty=0.01):
+def find_best_match(input_pts, prototypes, inlier_threshold, outlier_penalty=1.0, missing_penalty=0.01, input_weights=None):
     """
     Findet den besten passenden Prototypen für die gegebenen Input-Punkte.
     Zentralisierte Logik für Inferenz und Dashboard.
@@ -118,14 +118,13 @@ def find_best_match(input_pts, prototypes, inlier_threshold, outlier_penalty=1.0
     """
     best_score = float('inf')
     best_proto = None
+
+    if input_weights is None:
+        input_weights = np.ones(len(input_pts))
     
     for proto in prototypes:
         proto_pts = proto['points'][:, :2]
         
-        # Ein Prototyp kann kein Match sein, wenn er weniger Punkte hat als der Input
-        if len(proto_pts) < len(input_pts):
-            continue
-            
         # Berechne Distanzen direkt (ohne Verschiebung/Alignment)
         dists = cdist(input_pts, proto_pts)
         
@@ -135,15 +134,18 @@ def find_best_match(input_pts, prototypes, inlier_threshold, outlier_penalty=1.0
         
         # Bestimme Inliers basierend auf dem Threshold
         inlier_mask = min_dists < inlier_threshold
+        outlier_mask = ~inlier_mask
         num_inliers = np.sum(inlier_mask)
-        num_outliers = len(input_pts) - num_inliers
         inlier_dist_mean = np.mean(min_dists[inlier_mask]) if num_inliers > 0 else 0
         
+        # Weighted outlier score
+        outlier_score = np.sum(input_weights[outlier_mask]) * outlier_penalty
+
         # Berechne Anzahl der vorhergesagten fehlenden Schrauben (Occam's Razor)
         num_unique_matched = len(np.unique(closest_proto_indices[inlier_mask])) if num_inliers > 0 else 0
         num_predicted_missing = len(proto_pts) - num_unique_matched
         
-        score = (num_outliers * outlier_penalty) + inlier_dist_mean + (num_predicted_missing * missing_penalty)
+        score = outlier_score + inlier_dist_mean + (num_predicted_missing * missing_penalty)
 
         if score < best_score:
             best_score = score
