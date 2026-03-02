@@ -7,7 +7,7 @@ paths:
   train_labels: "C:\\Users\\Kevin\\Clustererkennung\\bolt_detection\\dataset\\all_labels"
   val_labels: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
   # Input directory for inference run
-  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels_subset3"
+  inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/scripts/YOLO/testing/infer_train_30_epochs_m_conf(0.4)/labels_subset4"
   #inference_input_dir: "C:/Users/Kevin/Clustererkennung/bolt_detection/dataset/labels/val"
   
 # Output Directories (Scripts will create subfolders here)
@@ -30,7 +30,7 @@ clustering:
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "YOLO_with_scaling_run2"
+  run_name: "YOLO_subset_with_scaling_run4"
   # Strict threshold for 1:1 matching. Increased to 0.015 (~1.5%) to handle YOLO jitter better.
   strict_spatial_threshold: 0.05
   # Threshold to consider a point an "inlier" for robust scoring (normalized coordinates 0.0-1.0)

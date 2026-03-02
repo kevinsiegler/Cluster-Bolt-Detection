@@ -5,68 +5,110 @@ import os
 import numpy as np
 import pickle
 import shutil
+import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from scipy.spatial.distance import cdist 
 from utils import load_config, ensure_dir, save_yolo_labels, load_yolo_labels
 
 def find_best_match_with_scaling(input_pts, prototypes, inlier_threshold, outlier_penalty=1.0, missing_penalty=0.01, input_weights=None):
     """
-    Exhaustive Matching: Probiert jeden Cluster-Punkt auf jeden Input-Punkt zu legen
-    und testet verschiedene Skalierungen. Robust gegen Ghost-Boxen.
+    GPU-beschleunigte Version des Exhaustive Matching mittels PyTorch.
+    Probiert jeden Cluster-Punkt auf jeden Input-Punkt zu legen und testet verschiedene Skalierungen parallel.
     """
+    # Prüfen ob GPU verfügbar
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Daten auf Device schieben
+    t_input_pts = torch.tensor(input_pts, dtype=torch.float32, device=device) # (N, 2)
+    
+    if input_weights is None:
+        t_weights = torch.ones(len(input_pts), dtype=torch.float32, device=device)
+    else:
+        t_weights = torch.tensor(input_weights, dtype=torch.float32, device=device)
+        
+    scales = torch.arange(0.85, 1.16, 0.05, device=device) # (S,)
+    
     best_score = float('inf')
     best_proto = None
     best_aligned_proto = None
-
-    if input_weights is None:
-        input_weights = np.ones(len(input_pts))
     
-    # Skalierungen, die getestet werden sollen (85% bis 115%)
-    scales = np.arange(0.85, 1.16, 0.05)
-
-    # Optimierung: Nur Prototypen prüfen, die grob passen könnten (optional, hier deaktiviert für maximale Genauigkeit)
+    # Loop über Prototypen (diese sind unterschiedlich groß, daher schwer komplett zu batchen ohne Padding)
     for proto in prototypes:
-        proto_pts = proto['points'][:, :2]
+        t_proto_pts = torch.tensor(proto['points'][:, :2], dtype=torch.float32, device=device) # (M, 2)
         
-        # BRUTE FORCE MATCHING:
-        # Wir probieren JEDEN Cluster-Punkt auf JEDEN Input-Punkt zu legen.
-        for p_idx, p_anchor in enumerate(proto_pts):
-            # Iteriere über jeden Punkt im Input (Anker I)
-            for i_idx, i_anchor in enumerate(input_pts):
-                # Iteriere über Skalierungen
-                for s in scales:
-                    # Transformation:
-                    # 1. Verschiebe Prototyp so, dass p_anchor im Ursprung ist (proto_pts - p_anchor)
-                    # 2. Skaliere (* s)
-                    # 3. Verschiebe zum Input-Anker (+ i_anchor)
-                    aligned_proto = (proto_pts - p_anchor) * s + i_anchor
-                    
-                    # --- Score Berechnung ---
-                    dists = cdist(input_pts, aligned_proto) # Distanzmatrix: Input x Cluster
-                    
-                    # Für jeden Input-Punkt den nächsten Cluster-Punkt finden
-                    closest_proto_indices = np.argmin(dists, axis=1)
-                    min_dists = dists[np.arange(len(input_pts)), closest_proto_indices]
-                    
-                    inlier_mask = min_dists < inlier_threshold
-                    outlier_mask = ~inlier_mask
-                    
-                    outlier_score = np.sum(input_weights[outlier_mask]) * outlier_penalty
-                    
-                    num_inliers = np.sum(inlier_mask)
-                    inlier_dist_mean = np.mean(min_dists[inlier_mask]) if num_inliers > 0 else 0
-                    
-                    # Wie viele Cluster-Punkte wurden getroffen?
-                    # (Verhindert, dass ein Cluster-Punkt mehrere Input-Punkte "aufsaugt")
-                    num_unique_matched = len(np.unique(closest_proto_indices[inlier_mask])) if num_inliers > 0 else 0
-                    num_predicted_missing = len(proto_pts) - num_unique_matched
-                    
-                    score = outlier_score + inlier_dist_mean + (num_predicted_missing * missing_penalty)
-
-                    if score < best_score:
-                        best_score = score
-                        best_proto = proto
-                        best_aligned_proto = aligned_proto
+        M = t_proto_pts.shape[0]
+        N = t_input_pts.shape[0]
+        S = scales.shape[0]
+        
+        # --- Vektorisierung aller Kombinationen (M x N x S) ---
+        
+        # 1. Dimensionen vorbereiten für Broadcasting
+        # Proto-Punkte (M, 2) -> (1, 1, 1, M, 2)
+        proto_expanded = t_proto_pts.view(1, 1, 1, M, 2)
+        # Ankerpunkte des Prototyps (M, 2) -> (M, 1, 1, 1, 2)
+        p_anchors = t_proto_pts.view(M, 1, 1, 1, 2)
+        # Ankerpunkte des Inputs (N, 2) -> (1, N, 1, 1, 2)
+        i_anchors = t_input_pts.view(1, N, 1, 1, 2)
+        # Skalierungen (S,) -> (1, 1, S, 1, 1)
+        s_expanded = scales.view(1, 1, S, 1, 1)
+        
+        # Transformation: (proto - p_anchor) * scale + i_anchor
+        # Shape: (M, N, S, M, 2)
+        aligned_protos = (proto_expanded - p_anchors) * s_expanded + i_anchors
+        
+        # Flatten der Batch-Dimensionen: K = M * N * S
+        K = M * N * S
+        aligned_protos_flat = aligned_protos.view(K, M, 2)
+        
+        # 2. Distanzberechnung (Input vs. alle Kandidaten)
+        # Input (N, 2) -> (1, N, 2) -> expand zu (K, N, 2)
+        input_expanded = t_input_pts.view(1, N, 2).expand(K, N, 2)
+        
+        # cdist: (K, N, 2) vs (K, M, 2) -> (K, N, M)
+        dists = torch.cdist(input_expanded, aligned_protos_flat)
+        
+        # 3. Scoring (Parallel für alle K Kandidaten)
+        # min über dim 2 (M) -> (K, N)
+        min_dists, closest_proto_indices = torch.min(dists, dim=2)
+        
+        # Inlier Maske
+        inlier_mask = min_dists < inlier_threshold # (K, N)
+        
+        # Outlier Score
+        weights_expanded = t_weights.view(1, N).expand(K, N)
+        outlier_score = (weights_expanded * (~inlier_mask).float()).sum(dim=1) * outlier_penalty # (K,)
+        
+        # Inlier Distanz Mean
+        inlier_dists_sum = (min_dists * inlier_mask.float()).sum(dim=1)
+        num_inliers = inlier_mask.sum(dim=1)
+        
+        inlier_dist_mean = torch.zeros_like(outlier_score)
+        mask_has_inliers = num_inliers > 0
+        inlier_dist_mean[mask_has_inliers] = inlier_dists_sum[mask_has_inliers] / num_inliers[mask_has_inliers].float()
+        
+        # Missing Penalty (Num Predicted Missing)
+        # One-Hot Encoding der Indices: (K, N, M)
+        one_hot = F.one_hot(closest_proto_indices, num_classes=M).float()
+        # Nur Inliers zählen
+        one_hot_masked = one_hot * inlier_mask.unsqueeze(-1).float()
+        # Summe über Input-Punkte -> Wie oft wurde jeder Proto-Punkt getroffen? (K, M)
+        points_hit_counts = one_hot_masked.sum(dim=1)
+        # Zählen wie viele > 0 sind (Unique Matches)
+        num_unique_matched = (points_hit_counts > 0).sum(dim=1).float()
+        
+        num_predicted_missing = M - num_unique_matched
+        
+        scores = outlier_score + inlier_dist_mean + (num_predicted_missing * missing_penalty)
+        
+        # Besten Score in diesem Batch finden
+        min_score_batch, min_idx_batch = torch.min(scores, dim=0)
+        
+        if min_score_batch.item() < best_score:
+            best_score = min_score_batch.item()
+            best_proto = proto
+            # Zurück aufs CPU/Numpy Format für den Return
+            best_aligned_proto = aligned_protos_flat[min_idx_batch].cpu().numpy()
             
     return best_proto, best_score, best_aligned_proto
 
@@ -77,7 +119,6 @@ def run_inference():
     
     # Append _scaled to run_name to differentiate from fixed inference
     run_name = cfg['inference'].get('run_name', 'default_run')
-    run_name = cfg['inference'].get('run_name', 'default_run') + "_scaled"
     
     # Paths
     model_name = cfg['clustering'].get('model_name', 'prototypes')
@@ -109,6 +150,7 @@ def run_inference():
     def_w, def_h = cfg['inference']['default_box_size']
     
     print(f"Running inference with SCALING on {len(files)} files...")
+    print(f"Using device: {'CUDA (GPU)' if torch.cuda.is_available() else 'CPU'}")
     print(f"Output directory: {output_dir}")
     
     for filename in tqdm(files):

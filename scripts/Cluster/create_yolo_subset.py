@@ -34,7 +34,7 @@ def create_subset():
 
     # Ziel-Ordner definieren (gleicher Pfad + "_subset")
     # rstrip, um eventuelle abschließende Slashes zu entfernen, damit der Suffix korrekt angehängt wird
-    subset_dir = input_dir.rstrip("/\\") + "_subset3"
+    subset_dir = input_dir.rstrip("/\\") + "_subset4"
 
     # Falls der Ordner schon existiert, vorher bereinigen, um ein sauberes 5% Sample zu haben
     if os.path.exists(subset_dir):
@@ -51,7 +51,7 @@ def create_subset():
     total_files = len(files)
     
     # 5% berechnen
-    subset_size = int(total_files * 0.04)
+    subset_size = int(total_files * 0.02)
     if subset_size < 1 and total_files > 0:
         subset_size = 1
         
