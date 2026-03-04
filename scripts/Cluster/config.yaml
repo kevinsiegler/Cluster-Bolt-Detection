@@ -30,7 +30,7 @@ clustering:
 
 inference:
   # Name of the current run (used for output folder naming)
-  run_name: "YOLO_subset_with_scaling_run4"
+  run_name: "YOLO_subset_with_scaling_run10_percentv1"
   # Strict threshold for 1:1 matching. Increased to 0.015 (~1.5%) to handle YOLO jitter better.
   strict_spatial_threshold: 0.05
   # Threshold to consider a point an "inlier" for robust scoring (normalized coordinates 0.0-1.0)
@@ -56,6 +56,6 @@ inference:
 
 evaluation:
   # Distance threshold for True Positive (normalized)
-  dist_threshold: 0.05
+  dist_threshold: 0.0125
   # IoU threshold for True Positive
   iou_threshold: 0.3
