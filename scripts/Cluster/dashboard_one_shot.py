@@ -16,6 +16,7 @@ MODEL_PATH = r"C:\Users\Kevin\Clustererkennung\bolt_detection\scripts\Cluster\Ou
 
 # Die Liste der zu verarbeitenden Bilder
 TARGET_IMAGES = [
+    "68a4a551138bb651ff69f4ad",
     "68a3bc3b9adc8ef68d6d31dd",
     "68a4a9b5a314900b6f473422",
     "68a4a9cea314900b6f474a3f",
